@@ -1,13 +1,13 @@
 from IPython.core.display import display, HTML
 display(HTML("<style>.container { width:100% !important; }</style>"))
-import ipdb, time, sys, os, pickle
+import ipdb, time, sys, os, pickle, glob, json
 from IPython.display import clear_output
+from collections import Counter
 
-# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-# os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 # os.environ['KMP_DUPLICATE_LIB_OK']='True'
-from glob import glob
-import json
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
 import numpy as np
 from pprint import pprint
 from IPython.core.display import display, HTML

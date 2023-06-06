@@ -1,4 +1,5 @@
 from utils.imports import *
+from utils.helpers import * 
 torch.manual_seed(1337)
 
 # hyperparameters 
@@ -18,6 +19,7 @@ dropout = 0.2 # 20% of nodes is disabled
 
 assert int(n_embd // n_head) - (n_embd // n_head) == 0
 print(f'device: {device}')
+vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
 
 
 class SingleHead(nn.Module):
@@ -206,19 +208,17 @@ def get_batch(data, batch_size):
     return xb, yb
 
 
-def prepare_data():
-    with open('dataset/tiny_shakespeare.txt', 'r') as f:
-        text = f.read()
+def prepare_txt_data(fname='dataset/tiny_shakespeare.txt', text=None, printer=True):
+    if fname:
+        with open(fname, 'r') as f:
+            text = f.read()    
     
-    # with open('dataset/wiki.pkl', 'rb') as file:
-        data = pickle.load(file)
-    sum([len(val) for key,val in data.items()]) * 1e-6     
-
     # A quick look into the dataset
     chars = sorted(list(set(text)))
     vocab_size = len(chars)
-    print(fr"vocab:  {''.join(chars)}")
-    print(f'vocab_size: {vocab_size}')
+    if printer:
+        print(fr"vocab:  {''.join(chars)}")
+        print(f'vocab_size: {vocab_size}')
 
     # single character tokenizer
     stoi = {c:i for i, c in enumerate(chars)}
@@ -231,17 +231,3 @@ def prepare_data():
     val_data = data[n:]
     
     return train_data, val_data, vocab_size, decode
-
-
-def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval):
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(4*1.618, 4))
-    ax.plot(list_epochs, list_losses, 'k', alpha=.6, label='train')
-    ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,0], 'b.-', alpha=.6, label='train')
-    ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,1], 'r.-', alpha=.6, label='val')
-    ax.legend()
-    ax.set_title('Cross-Entropy Loss')
-    ax.set_xlabel('epochs')
-    ax.set_xlim(0)
-    ax.set_ylim(0)
-
-
