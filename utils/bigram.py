@@ -206,28 +206,3 @@ def get_batch(data, batch_size):
     yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
     xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
     return xb, yb
-
-
-def prepare_txt_data(fname='dataset/tiny_shakespeare.txt', text=None, printer=True):
-    if fname:
-        with open(fname, 'r') as f:
-            text = f.read()    
-    
-    # A quick look into the dataset
-    chars = sorted(list(set(text)))
-    vocab_size = len(chars)
-    if printer:
-        print(fr"vocab:  {''.join(chars)}")
-        print(f'vocab_size: {vocab_size}')
-
-    # single character tokenizer
-    stoi = {c:i for i, c in enumerate(chars)}
-    itos = {i:c for i, c in enumerate(chars)}
-    encode = lambda s: [stoi[c] for c in s]  # takes in a string, output list of integers
-    decode = lambda inp: [itos[i] for i in inp]  # input a list of integers, outputs a string
-    data = torch.tensor(encode(text), dtype=torch.long)
-    n = int(0.9 * len(data))
-    train_data = data[:n]
-    val_data = data[n:]
-    
-    return train_data, val_data, vocab_size, decode

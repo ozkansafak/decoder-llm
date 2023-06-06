@@ -1,8 +1,10 @@
 from IPython.core.display import display, HTML
 display(HTML("<style>.container { width:100% !important; }</style>"))
-import ipdb, time, sys, os, pickle, glob, json
+import ipdb, re, time, sys, os, pickle, glob, json, random, unidecode, unicodedata
 from IPython.display import clear_output
 from collections import Counter
+from urllib.request import urlopen
+from bs4 import BeautifulSoup
 
 # os.environ['KMP_DUPLICATE_LIB_OK']='True'
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -31,12 +33,12 @@ pylab.rcParams.update({'legend.fontsize': 'medium',
                        'ytick.labelsize': 'medium'})
 
 
-def print_runtime(start, printer=True):
-    end = time.time()
+def print_runtime(start, printer=True, end='\n'):
+    clock_end = time.time()
     if printer:
-        print(f'Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec')
+        print(f'Runtime: {int((clock_end-start)//60)} min {int((clock_end-start)%60):2d} sec')
         return None
     else:
-        return f' (...Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec)'
+        return f' (...Runtime: {int((clock_end-start)//60)} min {int((clock_end-start)%60):2d} sec)'
 
     

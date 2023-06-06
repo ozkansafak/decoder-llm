@@ -3,11 +3,12 @@ from IPython.display import display, HTML
 display(HTML("<style>.container { width:100% !important; }</style>"))
 import ipdb, time, sys, os, pickle
 from urllib.request import urlopen
-from bs4 import BeautifulSoup
 random.seed(42)
 from IPython.display import clear_output
 import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
+from collections import Counter
+
 
 pylab.rcParams.update({'legend.fontsize': 'large',
                        'font.size'      : 14,
