@@ -133,9 +133,9 @@ class BigramLanguageModel(nn.Module):
             logits = logits.view(B*T, C)
             targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
-        
+
         return logits, loss
-    
+
     def compute_num_params(self):
         num_params = 0
         for name, item in self.named_parameters():
@@ -160,22 +160,26 @@ class BigramLanguageModel(nn.Module):
 
 def generate(model, idx, max_new_tokens):
     # idx is (B, T) array of indices in the current context
+    
     for _ in range(max_new_tokens):
         # crop idx to the last block_size tokens
         idx_cond = idx[:, -block_size:]
+
         # get prediction 
-        logits, loss = model(idx_cond)
-        if device.startswith('cuda'):
-            loss = loss.mean()
+        logits, _ = model(idx_cond)
 
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
+
         # apply softmax to get probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
+
         # sample from the distribution
         idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+
         # append sampled index to the running sequence
         idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+
     return idx
 
 
@@ -195,7 +199,7 @@ def estimate_loss(model, train_data, val_data, eval_iters, ib, start):
         losses['train' if i == 0  else 'val'] = losses_i.mean()
 
     print(f"step {ib:5d}: train_loss {losses['train']:.4f}, val_loss: {losses['val']:.4f} {print_runtime(start, False)}")
-    
+
     model.train()
     return losses
 
