@@ -133,6 +133,8 @@ class BigramLanguageModel(nn.Module):
             logits = logits.view(B*T, C)
             targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
+            if device.startswith('cuda'):
+                loss = loss.mean()
 
         return logits, loss
 
@@ -192,8 +194,6 @@ def estimate_loss(model, train_data, val_data, eval_iters, ib, start):
         for k in range(eval_iters):
             xb, yb = get_batch(data, batch_size)
             logits, loss = model(xb, yb)
-            if device.startswith('cuda'):
-                loss = loss.mean()
 
             losses_i[k] = loss.item()
         losses['train' if i == 0  else 'val'] = losses_i.mean()

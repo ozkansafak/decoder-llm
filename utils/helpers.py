@@ -2,7 +2,6 @@ from utils.imports import *
 
 
 # request children pages wiki pages starting with the root page.
-level = -1
 max_num_chars = 100 * 1e6
 num_chars = 0
 visited_urls = dict()
@@ -19,13 +18,29 @@ _encode = lambda s: [_stoi[c] for c in s]  # takes in a string, output list of i
 decode = lambda inp: [_itos[i] for i in inp]  # input a list of integers, outputs a string
 
 
-
-def extract_text_from_url(url, visited_urls, num_chars, printer=False):
-    """ num_chars: cumulative number of characters in crawled.
-        visited_urls: visited_url[url] = len(text)
-                      This function updates `visited_urls` in place.
-    """
+def load_val_data(num_pages=20, printer=False):
+    with open('dataset/val_wiki.json', 'r') as _f:
+        val_urls = json.load(_f)
+        
+    num_chars = 0
+    val_data = []
+    for i, url in enumerate(val_urls[:num_pages]):
+        text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
+        val_data.append(torch.tensor(_encode(text), dtype=torch.long))
+        print(f'{i:2d}  {url}')
     
+    val_data = torch.cat(val_data)
+
+    
+    return val_data, val_urls[:num_pages]
+
+
+def extract_single_url(url, visited_urls, num_chars):
+    """ :param num_chars: cumulative number of characters in crawled.
+        :param visited_urls: visited_url[url] = len(text)
+                             This function updates `visited_urls` in place.
+    """
+
     if url in visited_urls:
         print(f'url already in visited_urls: {url}')
         return '', None, num_chars
@@ -74,7 +89,7 @@ def extract_text_from_url(url, visited_urls, num_chars, printer=False):
     return text, html, num_chars
 
 
-def get_links(html, visited_urls):  
+def get_links(html, new_links, visited_urls):  
     if html is None:
         return []
 
@@ -88,7 +103,8 @@ def get_links(html, visited_urls):
     links = [url for url in links if not re.findall("[a-zA-Z0-9]:[a-zA-Z0-9]", url)]
     
     # only retain URLs that are not in `visited_url`
-    links = [url for url in links if url not in visited_urls]
+    set_exclude = set(visited_urls.keys()).union(set(new_links))
+    links = [url for url in links if url not in set_exclude]
 
     return links
 
@@ -100,7 +116,7 @@ def shave(new_links, visited_urls):
     for url in remove:
         new_links.remove(url)
 
-    print(f"shave(): No of visited urls removed: {len(remove)} urls" + '  ' * 50)
+    #print(f"shave(): No of visited urls removed: {len(remove)} urls" + '  ' * 50)
 
     return
 
@@ -194,101 +210,75 @@ def prepare_txt_data(fname='dataset/tiny_shakespeare.txt', text=None, printer=Tr
     return train_data, val_data, vocab_size, decode
 
 
-def prepare_streaming_wiki_data(text=None):
+def ptxt(num_chars):
 
-    # single character tokenizer
-    data = torch.tensor(_encode(text), dtype=torch.long)
-    n = int(0.9 * len(data))
-    train_data = data[:n]
-    val_data = data[n:]
-
-    return train_data, val_data
-
-
-def increment_level(new_links, level=-1):
-    level += 1
-    
-    print('---'*22 + f'\nstarted level: {level}\n' )
-
-    return level
-
-
-def number_printer(num_chars):
-    
     if num_chars < 1e6:
-        ptxt = f'{num_chars*1e-3:3.2f}K'
+        txt = f'{num_chars*1e-3:3.2f}K'
     elif num_chars < 1e9:
-        ptxt = f'{num_chars*1e-6:3.2f}M'
+        txt = f'{num_chars*1e-6:3.2f}M'
     elif num_chars < 1e12:
-        ptxt = f'{num_chars*1e-9:3.2f}G'
-        
-    return ptxt
+        txt = f'{num_chars*1e-9:3.2f}G'
+
+    return txt
 
 
 def crawl_wiki_data(new_links, visited_urls, num_chars, max_num_chars, printer=False):
     """ 
     """
-
     s0 = time.time()
+    
+    # initialize variables
+    num_chars_init = num_chars
+    train_data = []
+    n_init = len(new_links)
 
-    if printer: print(f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}' + '  '*50)
+    if printer: print(f'num_chars_init:{num_chars_init}  ' +
+                      f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}' + '  '*50)
+
     shave(new_links, visited_urls)
 
-    n = len(new_links)
-    for i, url in enumerate(new_links[:]):
-        new_links.pop(0)
-        
+    while num_chars < num_chars_init + 5e5:
+
+        url = new_links.pop(0)
         if url in visited_urls:
             print(f'WARNING: url in visited_urls!!!    ')
+            continue
             
-        if url not in visited_urls:
-            text, html, num_chars = extract_text_from_url(url, visited_urls, num_chars)
-            new_links.extend(get_links(html, visited_urls))
-            
-            ptxt = number_printer(num_chars)
-            
-            print(f'i:{str(i)+"/"+str(n)}, page_length:{len(text)//1000:3d}K  '+
-                  f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
-                  f'num_chars:{ptxt}  {url}' + 
-                  ' '*70
-                  , end='\r')
+        # shuffle new_links in place
+        random.shuffle(new_links)
 
-        # Terminate when max amount of text is crawled.
-        if num_chars > max_num_chars:
-            print(f'max characters reached: num_chars:{num_chars}. '+
-                  f'You should abort! {print_runtime(s0, printer=False)}'+
-                  f'  '*50)
-            return text, num_chars
-    
-        if i == 100:
-            break
+        text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
+        new_links.extend(get_links(html, new_links, visited_urls))
+        train_data.append(torch.tensor(_encode(text), dtype=torch.long))
 
-    if printer: print(f'Exiting crawl_wiki_data(): i:{i}  '+
+        print(f'page_length:{len(text)/1000:5.1f}K, '+
+              f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
+              f'num_chars:{ptxt(num_chars)}  {url}' + 
+              ' '*70
+              , end='\n')
+
+    train_data = torch.cat(train_data)
+
+    if printer: print(f'Exiting crawl_wiki_data(): '+
                       f'len(new_links): {len(new_links)}  '+
                       f'len(visited_urls):{len(visited_urls)}  '+
                       f'{print_runtime(s0, False)}' + '  '*50)
 
-    return text, num_chars
+    return train_data, num_chars
 
 
-def master_get_data(new_links, visited_urls, level, num_chars, max_num_chars):
-    level = increment_level(new_links, level)
 
-    # shuffle new_links in place
-    random.shuffle(new_links)
 
-    train_data, val_data = [], []
-    for j, url in enumerate(new_links[:]):
-        text, num_chars = crawl_wiki_data(new_links, visited_urls, num_chars, max_num_chars)
-        itrain_data, ival_data = prepare_streaming_wiki_data(text)
-        print(f'===> j:{j}  len(itrain_data): {len(itrain_data)}                                    \n')
-        train_data.append(itrain_data)
-        val_data.append(ival_data)
 
-        if j == 10:
-            break
 
-    train_data = torch.cat(train_data)
-    val_data = torch.cat(val_data)
 
-    return train_data, val_data, num_chars, level
+
+
+
+
+
+
+
+
+
+
