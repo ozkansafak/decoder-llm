@@ -2,19 +2,6 @@ from utils.imports import *
 from utils.helpers import * 
 torch.manual_seed(1337)
 
-# hyperparameters 
-batch_size = 64 # (B)
-block_size = 256 # (T) # maximum context length for predictions. Looks at 256 to predict 257
-max_iters = 10000
-eval_interval = 500
-learning_rate = 3e-4
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
-n_embd = 384 # (C) --every head is 64 dimensional
-n_head= 6
-n_layer = 6
-dropout = 0.2 # 20% of nodes is disabled 
-# ----------------------------
 
 
 assert int(n_embd // n_head) - (n_embd // n_head) == 0
@@ -134,7 +121,7 @@ class BigramLanguageModel(nn.Module):
             targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
             if device.startswith('cuda'):
-                loss = loss.mean()
+                loss = loss.mean()  
 
         return logits, loss
 
@@ -160,6 +147,60 @@ class BigramLanguageModel(nn.Module):
         return num_params
 
 
+def prepare_txt_data(fname='dataset/tiny_shakespeare.txt', text=None, printer=True):
+    if fname:
+        with open(fname, 'r') as f:
+            text = f.read()  
+    
+    # A quick look into the dataset
+    chars = sorted(list(set(text)))
+    vocab_size = len(chars)
+    if printer:
+        print(fr"vocab:  {''.join(chars)}")
+        print(f'vocab_size: {vocab_size}')
+
+    # single character tokenizer
+    stoi = {c:i for i, c in enumerate(chars)}
+    itos = {i:c for i, c in enumerate(chars)}
+    encode = lambda s: [stoi[c] for c in s]  # takes in a string, output list of integers
+    decode = lambda inp: [itos[i] for i in inp]  # input a list of integers, outputs a string
+    data = torch.tensor(encode(text), dtype=torch.long)
+    n = int(0.9 * len(data))
+    train_data = data[:n]
+    val_data = data[n:]
+    
+    return train_data, val_data, vocab_size, decode
+
+
+def plot_character_frequency(urls, wikis):
+    """ urls is a list of urls"""
+    cnt = dict()
+    for i, url in enumerate(urls):
+        text = wikis[url]
+        # text = clean_up(text, vocab)
+        _, _, vocab_size, decode = prepare_txt_data(text=text, printer=False)
+        cnt2 = Counter(text)
+        
+        for key,val in cnt2.items():
+            if key not in cnt:
+                cnt[key] = 0
+            cnt[key] += cnt2[key]
+        
+        if i % 100 == 0:
+            print(f'{i} of {len(urls)}', end='\r')
+
+    cnt = sorted(cnt.items(), key=lambda x: x[1])
+    y = []
+    for a,b in cnt:
+        y.append(b)
+
+    plt.semilogy(y, 'k.')
+    plt.xticks(range(len(y)), ''.join([f'{c}' for c,num in cnt]))
+    plt.xlim(-0.2, len(y)-.8);
+
+    return cnt
+    
+    
 def generate(model, idx, max_new_tokens):
     # idx is (B, T) array of indices in the current context
     
@@ -190,23 +231,103 @@ def estimate_loss(model, train_data, val_data, eval_iters, ib, start):
     losses = {}
     model.eval()
     for i, data in enumerate([train_data, val_data]):
-        losses_i = torch.zeros(eval_iters)
+        i_losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             xb, yb = get_batch(data, batch_size)
             logits, loss = model(xb, yb)
 
-            losses_i[k] = loss.item()
-        losses['train' if i == 0  else 'val'] = losses_i.mean()
+            if device.startswith('cuda') and torch.cuda.device_count() > 1:
+                i_losses[k] = np.mean(loss.tolist())
+            else:
+                i_losses[k] = loss.item()
+        losses['train' if i == 0  else 'val'] = i_losses.mean()
 
-    print(f"step {ib:5d}: train_loss {losses['train']:.4f}, val_loss: {losses['val']:.4f} {print_runtime(start, False)}")
+    print(f'step {str(ib)+":":5s} train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(start, False)}')
 
     model.train()
     return losses
 
 
 def get_batch(data, batch_size):
+    """ gets batches at random
+    """
+    
     ix = torch.randint(len(data) - block_size, (batch_size,))
     xb = torch.stack([data[i:i+block_size] for i in ix])
     yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
     xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
+
     return xb, yb
+
+
+def get_batch_sequentially(data, batch_size, pivot):
+    """   todo: get_batch_sequentially() needs to take as input one page and it should output number of batches mined.
+                For now, I'm concatenating all the wiki pages in a single torch.tensor train_data.
+                The last sentence of a page is preceded by the first sentence of the next page.
+    """
+    
+    if len(data) - pivot < (batch_size * block_size):
+        max_batches = len(data) // block_size
+        
+        print(f' ==> Not enough tokens in data. Need (batch_size * block_size) tokens in data, ' +
+              f'but len(data) = {len(data)}, max_batches = {len(data) // block_size}')
+        return None, None, 0
+    
+    ix = torch.arange(start=pivot, end=len(data) - block_size, step=block_size)[:batch_size]
+    if len(ix) < batch_size:
+        print('Beware!! Error coming up')
+        ipdb.set_trace()
+        
+    xb = torch.stack([data[i:i+block_size] for i in ix])
+    yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
+    
+    pivot += batch_size * block_size
+    return xb, yb, pivot
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

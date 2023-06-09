@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 # os.environ['KMP_DUPLICATE_LIB_OK']='True'
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 
 import numpy as np
 from pprint import pprint
@@ -18,9 +18,22 @@ import matplotlib.pylab as pylab
 import torch
 from torch import nn
 from torch.nn import functional as F
-
-#from transformers import AutoTokenizer, AutoModel
 import tiktoken
+
+
+# Hyperparameters for torch model
+batch_size = 64 # (B)
+block_size = 256 # (T) # maximum context length for predictions. Looks at 256 to predict 257
+max_iters = 5000
+eval_interval = 500
+learning_rate = 3e-4
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+eval_iters = 200
+n_embd = 384 # (C) --every head is 64 dimensional
+n_head = 6
+n_layer = 6
+dropout = 0.2 # 20% of nodes is disabled 
+# ----------------------------
 
 
 pylab.rcParams.update({'legend.fontsize': 'medium',
@@ -31,6 +44,8 @@ pylab.rcParams.update({'legend.fontsize': 'medium',
                        'axes.grid'      : 'on',
                        'xtick.labelsize': 'medium',
                        'ytick.labelsize': 'medium'})
+
+print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
 
 
 def print_runtime(start, printer=True, end='\n'):

@@ -27,7 +27,8 @@ def load_val_data(num_pages=20, printer=False):
     for i, url in enumerate(val_urls[:num_pages]):
         text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
         val_data.append(torch.tensor(_encode(text), dtype=torch.long))
-        print(f'{i:2d}  {url}')
+        if printer: 
+            print(f'{i:2d}  {url}')
     
     val_data = torch.cat(val_data)
 
@@ -141,35 +142,6 @@ def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval):
     ax.set_ylim(0)
 
 
-def plot_character_frequency(urls, wikis):
-    """ urls is a list of urls"""
-    cnt = dict()
-    for i, url in enumerate(urls):
-        text = wikis[url]
-        # text = clean_up(text, vocab)
-        _, _, vocab_size, decode = prepare_txt_data(text=text, printer=False)
-        cnt2 = Counter(text)
-        
-        for key,val in cnt2.items():
-            if key not in cnt:
-                cnt[key] = 0
-            cnt[key] += cnt2[key]
-        
-        if i % 100 == 0:
-            print(f'{i} of {len(urls)}', end='\r')
-
-    cnt = sorted(cnt.items(), key=lambda x: x[1])
-    y = []
-    for a,b in cnt:
-        y.append(b)
-
-    plt.semilogy(y, 'k.')
-    plt.xticks(range(len(y)), ''.join([f'{c}' for c,num in cnt]))
-    plt.xlim(-0.2, len(y)-.8);
-
-    return cnt
-    
-    
 def clean_up(text, vocab):
     # replace out of vocab chars with ' '
     list_text = list(text)
@@ -185,31 +157,6 @@ def clean_up(text, vocab):
     return text
 
 
-def prepare_txt_data(fname='dataset/tiny_shakespeare.txt', text=None, printer=True):
-    if fname:
-        with open(fname, 'r') as f:
-            text = f.read()  
-    
-    # A quick look into the dataset
-    chars = sorted(list(set(text)))
-    vocab_size = len(chars)
-    if printer:
-        print(fr"vocab:  {''.join(chars)}")
-        print(f'vocab_size: {vocab_size}')
-
-    # single character tokenizer
-    stoi = {c:i for i, c in enumerate(chars)}
-    itos = {i:c for i, c in enumerate(chars)}
-    encode = lambda s: [stoi[c] for c in s]  # takes in a string, output list of integers
-    decode = lambda inp: [itos[i] for i in inp]  # input a list of integers, outputs a string
-    data = torch.tensor(encode(text), dtype=torch.long)
-    n = int(0.9 * len(data))
-    train_data = data[:n]
-    val_data = data[n:]
-    
-    return train_data, val_data, vocab_size, decode
-
-
 def ptxt(num_chars):
 
     if num_chars < 1e6:
@@ -222,7 +169,7 @@ def ptxt(num_chars):
     return txt
 
 
-def crawl_wiki_data(new_links, visited_urls, num_chars, max_num_chars, printer=False):
+def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
     """ 
     """
     s0 = time.time()
@@ -233,11 +180,11 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, max_num_chars, printer=F
     n_init = len(new_links)
 
     if printer: print(f'num_chars_init:{num_chars_init}  ' +
-                      f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}' + '  '*50)
+                      f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}' + '  '*50 + '\n')
 
     shave(new_links, visited_urls)
 
-    while num_chars < num_chars_init + 5e5:
+    while num_chars < num_chars_init + add:
 
         url = new_links.pop(0)
         if url in visited_urls:
@@ -257,7 +204,12 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, max_num_chars, printer=F
               ' '*70
               , end='\n')
 
-    train_data = torch.cat(train_data)
+    """   todo: get_batch_sequentially() needs to take as input one page and it should output number of batches mined.
+                For now, I'm concatenating all the wiki pages in a single torch.tensor train_data.
+                The last sentence of a page is preceded by the first sentence of the next page.
+    """
+    
+    train_data = torch.cat(train_data).to(device)
 
     if printer: print(f'Exiting crawl_wiki_data(): '+
                       f'len(new_links): {len(new_links)}  '+
