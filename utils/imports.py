@@ -24,8 +24,9 @@ import tiktoken
 # Hyperparameters for torch model
 batch_size = 64 # (B)
 block_size = 256 # (T) # maximum context length for predictions. Looks at 256 to predict 257
-max_iters = 5000
+max_iters = 50000
 eval_interval = 500
+eval_generate = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
@@ -33,12 +34,13 @@ n_embd = 384 # (C) --every head is 64 dimensional
 n_head = 6
 n_layer = 6
 dropout = 0.2 # 20% of nodes is disabled 
+add = 25e5 # number of tokens to be crawled 
 # ----------------------------
 
 
-pylab.rcParams.update({'legend.fontsize': 'medium',
+pylab.rcParams.update({'legend.fontsize': 'small',
                        'font.size'      : 14,
-                       'figure.figsize' : (18, 4),
+                       'figure.figsize' : (9, 4),
                        'axes.labelsize' : 'medium',
                        'axes.titlesize' : 'medium',
                        'axes.grid'      : 'on',

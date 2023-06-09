@@ -130,16 +130,20 @@ def decompose_divs(soup, list_class_names, name=''):
         item.decompose()
 
 
-def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval):
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(4*1.618, 4))
+def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval, step=None):
+    list_epochs = np.array(list_epochs) / 1e6
+    list_epochs_eval = np.array(list_epochs_eval) / 1e6
+    
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3*1.618, 3))
     ax.plot(list_epochs, list_losses, 'k', alpha=.6, label='train')
     ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,0], 'b.-', alpha=.6, label='train')
     ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,1], 'r.-', alpha=.6, label='val')
     ax.legend()
-    ax.set_title('Cross-Entropy Loss')
-    ax.set_xlabel('epochs')
+    ax.set_title(f'Cross-Entropy Loss (step={step})')
+    ax.set_xlabel('milion tokens')
     ax.set_xlim(0)
     ax.set_ylim(0)
+    plt.show()
 
 
 def clean_up(text, vocab):
@@ -169,11 +173,12 @@ def ptxt(num_chars):
     return txt
 
 
-def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
+def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, step=None, printer=False):
     """ 
     """
     s0 = time.time()
-    
+    print(f'crawl_wiki_data at step={step}, add={add/1e6:.2f}M characters')
+
     # initialize variables
     num_chars_init = num_chars
     train_data = []
@@ -189,7 +194,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
         url = new_links.pop(0)
         if url in visited_urls:
             print(f'WARNING: url in visited_urls!!!    ')
-            continue
+            stop_execution
             
         # shuffle new_links in place
         random.shuffle(new_links)
@@ -198,11 +203,11 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
         new_links.extend(get_links(html, new_links, visited_urls))
         train_data.append(torch.tensor(_encode(text), dtype=torch.long))
 
-        print(f'page_length:{len(text)/1000:5.1f}K, '+
-              f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
-              f'num_chars:{ptxt(num_chars)}  {url}' + 
-              ' '*70
-              , end='\n')
+        if printer: print(f'page_length:{len(text)/1000:5.1f}K, '+
+                          f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
+                          f'num_chars:{ptxt(num_chars)}  {url}' + 
+                          ' '*70
+                          , end='\n')
 
     """   todo: get_batch_sequentially() needs to take as input one page and it should output number of batches mined.
                 For now, I'm concatenating all the wiki pages in a single torch.tensor train_data.

@@ -2,8 +2,6 @@ from utils.imports import *
 from utils.helpers import * 
 torch.manual_seed(1337)
 
-
-
 assert int(n_embd // n_head) - (n_embd // n_head) == 0
 print(f'device: {device}')
 vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
@@ -199,11 +197,17 @@ def plot_character_frequency(urls, wikis):
     plt.xlim(-0.2, len(y)-.8);
 
     return cnt
-    
-    
+
+
+def generate_text(model, step):
+    print(f' ==> step={step} Text Generation: ' + 
+          f''.join(decode(generate(model, torch.ones((1,1), device=device, dtype=torch.long) * 35, 
+                               max_new_tokens=400)[0].tolist()))) 
+
+
 def generate(model, idx, max_new_tokens):
     # idx is (B, T) array of indices in the current context
-    
+
     for _ in range(max_new_tokens):
         # crop idx to the last block_size tokens
         idx_cond = idx[:, -block_size:]
@@ -227,7 +231,7 @@ def generate(model, idx, max_new_tokens):
 
 
 @torch.no_grad()  # tells torch we're never gonna call .backward() 
-def estimate_loss(model, train_data, val_data, eval_iters, ib, start):
+def estimate_loss(model, train_data, val_data, eval_iters, step, start):
     losses = {}
     model.eval()
     for i, data in enumerate([train_data, val_data]):
@@ -242,7 +246,7 @@ def estimate_loss(model, train_data, val_data, eval_iters, ib, start):
                 i_losses[k] = loss.item()
         losses['train' if i == 0  else 'val'] = i_losses.mean()
 
-    print(f'step {str(ib)+":":5s} train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(start, False)}')
+    print(f'step {str(step)+":":5s} train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(start, False)}')
 
     model.train()
     return losses
@@ -251,7 +255,7 @@ def estimate_loss(model, train_data, val_data, eval_iters, ib, start):
 def get_batch(data, batch_size):
     """ gets batches at random
     """
-    
+
     ix = torch.randint(len(data) - block_size, (batch_size,))
     xb = torch.stack([data[i:i+block_size] for i in ix])
     yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
@@ -267,17 +271,11 @@ def get_batch_sequentially(data, batch_size, pivot):
     """
     
     if len(data) - pivot < (batch_size * block_size):
-        max_batches = len(data) // block_size
-        
-        print(f' ==> Not enough tokens in data. Need (batch_size * block_size) tokens in data, ' +
-              f'but len(data) = {len(data)}, max_batches = {len(data) // block_size}')
+        remaining_batches = (len(data) - pivot) // block_size
+        print(f' ==> Not enough tokens in train_data. remaining_batches = {remaining_batches}')
         return None, None, 0
     
     ix = torch.arange(start=pivot, end=len(data) - block_size, step=block_size)[:batch_size]
-    if len(ix) < batch_size:
-        print('Beware!! Error coming up')
-        ipdb.set_trace()
-        
     xb = torch.stack([data[i:i+block_size] for i in ix])
     yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
     xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
