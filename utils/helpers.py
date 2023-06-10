@@ -2,9 +2,6 @@ from utils.imports import *
 
 
 # request children pages wiki pages starting with the root page.
-max_num_chars = 100 * 1e6
-num_chars = 0
-visited_urls = dict()
 url = "https://www.wikipedia.org/wiki/David_Bowie"
 new_links = [url]
 # ------------------------------------------------
@@ -22,10 +19,10 @@ def load_val_data(num_pages=20, printer=False):
     with open('dataset/val_wiki.json', 'r') as _f:
         val_urls = json.load(_f)
         
-    num_chars = 0
+    _num_chars = 0
     val_data = []
     for i, url in enumerate(val_urls[:num_pages]):
-        text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
+        text, html, _num_chars = extract_single_url(url, visited_urls, _num_chars)
         val_data.append(torch.tensor(_encode(text), dtype=torch.long))
         if printer: 
             print(f'{i:2d}  {url}')
@@ -134,7 +131,7 @@ def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval, step=N
     list_epochs = np.array(list_epochs) / 1e6
     list_epochs_eval = np.array(list_epochs_eval) / 1e6
     
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3*1.618, 3))
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5))
     ax.plot(list_epochs, list_losses, 'k', alpha=.6, label='train')
     ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,0], 'b.-', alpha=.6, label='train')
     ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,1], 'r.-', alpha=.6, label='val')
@@ -143,6 +140,8 @@ def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval, step=N
     ax.set_xlabel('milion tokens')
     ax.set_xlim(0)
     ax.set_ylim(0)
+    yticks = ax.get_yticks()
+    ax.set_yticks(range(0, int(max(yticks))))
     plt.show()
 
 
@@ -173,24 +172,21 @@ def ptxt(num_chars):
     return txt
 
 
-def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, step=None, printer=False):
-    """ 
+def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
+    """ :param add: number of tokens to be crawled and added.
     """
+    
     s0 = time.time()
-    print(f'crawl_wiki_data at step={step}, add={add/1e6:.2f}M characters')
+    print(f'crawl_wiki_data: add={add/1e6:.2f}M characters... ', end='')
 
     # initialize variables
     num_chars_init = num_chars
     train_data = []
     n_init = len(new_links)
 
-    if printer: print(f'num_chars_init:{num_chars_init}  ' +
-                      f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}' + '  '*50 + '\n')
-
     shave(new_links, visited_urls)
 
     while num_chars < num_chars_init + add:
-
         url = new_links.pop(0)
         if url in visited_urls:
             print(f'WARNING: url in visited_urls!!!    ')
@@ -221,6 +217,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, step=None, prin
                       f'len(visited_urls):{len(visited_urls)}  '+
                       f'{print_runtime(s0, False)}' + '  '*50)
 
+    print(f'{len(new_links) - n_init} new pages crawled{print_runtime(s0, False)}')
     return train_data, num_chars
 
 
