@@ -1,17 +1,16 @@
 # Hyperparameters for transformer model
-batch_size = 128 # (B)
+batch_size = 64 # (B)
 block_size = 256 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 max_iters = 50000
 d_head = 64
-n_head = 6
-n_layer = 6
+n_head = 12
+n_layer = 12
+learning_rate = 6e-4
 dropout = 0.2 # 20% of nodes is disabled 
-learning_rate = 3e-4
-
 # --------------------------------------
+
 eval_iters = 200
 eval_interval = int((64 * 500) / batch_size)
-eval_generate = 500
 # --------------------------------------
 
 num_chars = 0
@@ -41,14 +40,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 import tiktoken
+from prettytable import PrettyTable
 
-assert int(d_model // n_head) - (d_model // n_head) == 0
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 
 pylab.rcParams.update({'legend.fontsize': 'small',
                        'font.size'      : 14,
-                       'figure.figsize' : (9, 4),
+                       'figure.figsize' : (9, 3.5),
                        'axes.labelsize' : 'medium',
                        'axes.titlesize' : 'medium',
                        'axes.grid'      : 'on',
@@ -66,4 +64,16 @@ def print_runtime(start, printer=True):
     else:
         return f' (...Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec)'
 
+    
+def count_parameters(model):
+    table = PrettyTable(["Modules", "Parameters"])
+    total_params = 0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad: continue
+        params = parameter.numel()
+        table.add_row([name, params])
+        total_params+=params
+    print(table)
+    print(f"Total Trainable Params: {total_params}")
+    return total_params
     

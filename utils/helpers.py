@@ -128,8 +128,8 @@ def decompose_divs(soup, list_class_names, name=''):
 
 
 def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval, step=None):
-    list_epochs = np.array(list_epochs) / 1e6
-    list_epochs_eval = np.array(list_epochs_eval) / 1e6
+    list_epochs = np.array(list_epochs) / 1e3
+    list_epochs_eval = np.array(list_epochs_eval) / 1e3
     
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5))
     ax.plot(list_epochs, list_losses, 'k', alpha=.6, label='train')
@@ -137,7 +137,7 @@ def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval, step=N
     ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,1], 'r.-', alpha=.6, label='val')
     ax.legend()
     ax.set_title(f'Cross-Entropy Loss (step={step})')
-    ax.set_xlabel('milion tokens')
+    ax.set_xlabel('thousand samples')
     ax.set_xlim(0)
     ax.set_ylim(0)
     yticks = ax.get_yticks()

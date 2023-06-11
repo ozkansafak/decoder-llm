@@ -54,7 +54,7 @@ class MultiHeadAttention(nn.Module):
         return out
 
 
-class FeedForward(nn.Module):
+class MLP(nn.Module):
     def __init__(self, d_model):
         super().__init__()
         self.net = nn.Sequential(
@@ -76,7 +76,7 @@ class Block(nn.Module):
         # d_model: embedding dimension, n_head: the number of heads we'd like
         super().__init__() 
         self.sa = MultiHeadAttention(n_head)
-        self.ffwd = FeedForward(d_model)
+        self.ffwd = MLP(d_model)
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
 
@@ -89,7 +89,7 @@ class Block(nn.Module):
         return x
 
 
-class BigramLanguageModel(nn.Module):
+class DecoderTransformer(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         # each token directly reads the logits for the next token from a lookup table
@@ -129,12 +129,7 @@ class BigramLanguageModel(nn.Module):
                 num_params += m
             else:
                 m, n = item.shape
-            num_params += m * n
-
-        print(f'd_head:  {d_head}')
-        print(f'n_head:  {n_head}')
-        print(f'd_model: {d_model}')
-        print(f'n_layer: {n_layer}')
+                num_params += m * n
 
         if num_params < 1e3:
             print(f"num_params: {num_params}")
@@ -145,6 +140,13 @@ class BigramLanguageModel(nn.Module):
         elif num_params < 1e12:
             print(f"num_params: {int(num_params * 1e-9)}B")
 
+        print(f'n_layer: {n_layer}')
+        print(f'd_model: {d_model}')
+        print(f'n_head:  {n_head}')
+        print(f'd_head:  {d_head}')
+        print(f'learning_rate:  {learning_rate}')
+        print()
+        
         return num_params
 
 
@@ -202,10 +204,13 @@ def plot_character_frequency(urls, wikis):
     return cnt
 
 
-def generate_text(model, step):
-    print(f'  ===>  Text Generation: ' + 
+def generate_text(model, step, start=None):
+    print(f'===>  Text Generation: ' + 
           f''.join(decode(generate(model, torch.ones((1,1), device=device, dtype=torch.long) * 35, 
                                max_new_tokens=400)[0].tolist()))) 
+    if start is not None:
+        print_runtime(start)
+        print('---' *30)
 
 
 def generate(model, idx, max_new_tokens):
@@ -234,7 +239,7 @@ def generate(model, idx, max_new_tokens):
 
 
 @torch.no_grad()  # tells torch we're never gonna call .backward() 
-def estimate_loss(model, train_data, val_data, eval_iters, step, start):
+def estimate_loss(model, train_data, val_data, step, start):
     losses = {}
     model.eval()
     for i, data in enumerate([train_data, val_data]):
@@ -273,7 +278,7 @@ def get_batch(data, batch_size, pivot=0):
 
     if len(data) - pivot < (batch_size * block_size):
         procured_batches = (len(data) - pivot) // block_size
-        print(f' ==> Not enough tokens left in train_data. procured_batches = {procured_batches}')
+        print(f' ==> get_batch: procured_batches = {procured_batches} out of {batch_size} requested')
         if procured_batches == 0:
             xb = torch.zeros((0, block_size))
             yb = torch.zeros((0, block_size))
@@ -287,6 +292,50 @@ def get_batch(data, batch_size, pivot=0):
     
     pivot += batch_size * block_size        
     return xb, yb, pivot
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
