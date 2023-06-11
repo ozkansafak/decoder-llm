@@ -282,6 +282,7 @@ def get_batch(data, batch_size, pivot=0):
         if procured_batches == 0:
             xb = torch.zeros((0, block_size))
             yb = torch.zeros((0, block_size))
+            xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
             pivot = 0
             return xb, yb, pivot
     
