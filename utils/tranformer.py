@@ -280,8 +280,8 @@ def get_batch(data, batch_size, pivot=0):
         procured_batches = (len(data) - pivot) // block_size
         print(f' ==> get_batch: procured_batches = {procured_batches} out of {batch_size} requested')
         if procured_batches == 0:
-            xb = torch.zeros((0, block_size))
-            yb = torch.zeros((0, block_size))
+            xb = torch.zeros((0, block_size), dtype=torch.long)
+            yb = torch.zeros((0, block_size), dtype=torch.long)
             xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
             pivot = 0
             return xb, yb, pivot
@@ -291,7 +291,7 @@ def get_batch(data, batch_size, pivot=0):
     yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
     xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
     
-    pivot += batch_size * block_size        
+    pivot += batch_size * block_size      
     return xb, yb, pivot
 
 
