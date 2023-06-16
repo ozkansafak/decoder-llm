@@ -1,27 +1,32 @@
 # Hyperparameters for transformer model
-batch_size = 64 # (B)
-max_iters = 50000
-d_head = 64
-n_head = 6
-n_layer = 6
+batch_size = 12 # (B)
+d_model = 768
+n_heads = 12
+n_layer = 12
+block_size = 1024 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 learning_rate = 3e-4
-block_size = 256 # (T) # maximum context length for predictions. Looks at 256 to predict 257
-dropout = 0.2 # 20% of nodes is disabled 
+dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
+max_iters = 20000
+
 # --------------------------------------
 
 eval_iters = 200
 eval_interval = int((64 * 500) / batch_size)
+
 # --------------------------------------
 
 num_chars = 0
 visited_urls = dict()
-add = 25e5 # number of tokens to be crawled 
-d_model = d_head * n_head # (C) --each head is 64 dimensional
+add = 2.5e6 # number of tokens to be crawled 
+# d_model = d_head * n_heads # (C) --each head is 64 dimensional
+d_head = int(d_model / n_heads)
 
+
+assert d_model / n_heads % 1 == 0
 # set the visible GPUs for CUDA to use.
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 from IPython.core.display import display, HTML
 display(HTML("<style>.container { width:100% !important; }</style>"))

@@ -72,10 +72,10 @@ class MLP(nn.Module):
 class Block(nn.Module):
     """ Transformer block: communication (MultiHeadAttention) followed by computation (Feed Forward Network) """
 
-    def __init__(self, d_model, n_head):
-        # d_model: embedding dimension, n_head: the number of heads we'd like
+    def __init__(self, d_model, n_heads):
+        # d_model: embedding dimension, n_heads: the number of heads we'd like
         super().__init__() 
-        self.sa = MultiHeadAttention(n_head)
+        self.sa = MultiHeadAttention(n_heads)
         self.ffwd = MLP(d_model)
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
@@ -89,16 +89,16 @@ class Block(nn.Module):
         return x
 
 
-class DecoderTransformer(nn.Module):
+class DecoderModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         # each token directly reads the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, d_model)
         self.position_embedding_table = nn.Embedding(block_size, d_model)
-        self.blocks = nn.Sequential(*[Block(d_model, n_head) for _ in range(n_layer)])
+        self.blocks = nn.Sequential(*[Block(d_model, n_heads) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(d_model) # final layer norm
         self.lm_head = nn.Linear(d_model, vocab_size)
-        self.stdout_num_params()
+        self.print_hyperparams_to_stdout()
         
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -121,7 +121,7 @@ class DecoderTransformer(nn.Module):
 
         return logits, loss
 
-    def stdout_num_params(self):
+    def print_hyperparams_to_stdout(self):
         num_params = 0
         for name, item in self.named_parameters():
             if len(item.shape) == 1:
@@ -131,6 +131,7 @@ class DecoderTransformer(nn.Module):
                 m, n = item.shape
                 num_params += m * n
 
+        print()
         if num_params < 1e3:
             print(f"num_params: {num_params}")
         elif num_params < 1e6:
@@ -140,10 +141,12 @@ class DecoderTransformer(nn.Module):
         elif num_params < 1e12:
             print(f"num_params: {int(num_params * 1e-9)}B")
 
-        print(f'n_layer: {n_layer}')
         print(f'd_model: {d_model}')
-        print(f'n_head:  {n_head}')
+        print(f'n_layer: {n_layer}')
+        print(f'n_heads:  {n_heads}')
         print(f'd_head:  {d_head}')
+        print(f'block_size:  {block_size}')
+        print(f'batch_size: {batch_size}')
         print(f'learning_rate:  {learning_rate}')
         print()
         
@@ -205,9 +208,9 @@ def plot_character_frequency(urls, wikis):
 
 
 def generate_text(model, step, start=None):
-    print(f'===>  Text Generation: ' + 
-          f''.join(decode(generate(model, torch.ones((1,1), device=device, dtype=torch.long) * 35, 
-                               max_new_tokens=400)[0].tolist()))) 
+    print(f'===>  Text Generation: ')
+    print(f''.join(decode(generate(model, torch.ones((1,1), device=device, dtype=torch.long) * 35, 
+                                   max_new_tokens=400)[0].tolist()))) 
     if start is not None:
         print_runtime(start)
         print('---' *30)
@@ -242,6 +245,8 @@ def generate(model, idx, max_new_tokens):
 def estimate_loss(model, train_data, val_data, step, start):
     losses = {}
     model.eval()
+    s0 = time.time()
+    print('estimating loss...')
     for i, data in enumerate([train_data, val_data]):
         i_losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
@@ -254,7 +259,7 @@ def estimate_loss(model, train_data, val_data, step, start):
                 i_losses[k] = loss.item()
         losses['train' if i == 0  else 'val'] = i_losses.mean()
 
-    print(f'step {str(step)+":":5s} train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(start, False)}')
+    print(f'step {str(step)+":":5s} train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(s0, False)}')
 
     model.train()
     return losses

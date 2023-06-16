@@ -114,8 +114,6 @@ def shave(new_links, visited_urls):
     for url in remove:
         new_links.remove(url)
 
-    #print(f"shave(): No of visited urls removed: {len(remove)} urls" + '  ' * 50)
-
     return
 
     
@@ -181,7 +179,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
 
     # initialize variables
     num_chars_init = num_chars
-    train_data = []
+    data = []
     n_init = len(new_links)
 
     shave(new_links, visited_urls)
@@ -197,7 +195,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
 
         text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
         new_links.extend(get_links(html, new_links, visited_urls))
-        train_data.append(torch.tensor(_encode(text), dtype=torch.long))
+        data.append(torch.tensor(_encode(text), dtype=torch.long))
 
         if printer: print(f'page_length:{len(text)/1000:5.1f}K, '+
                           f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
@@ -205,12 +203,12 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
                           ' '*70
                           , end='\n')
 
-    """   todo: get_batch_sequentially() needs to take as input one page and it should output number of batches mined.
-                For now, I'm concatenating all the wiki pages in a single torch.tensor train_data.
+    """   todo: get_batch() needs to take as input one page and it should output number of batches mined.
+                For now, I'm concatenating all the wiki pages in a single torch.tensor data.
                 The last sentence of a page is preceded by the first sentence of the next page.
     """
     
-    train_data = torch.cat(train_data).to(device)
+    data = torch.cat(data).to(device)
 
     if printer: print(f'Exiting crawl_wiki_data(): '+
                       f'len(new_links): {len(new_links)}  '+
@@ -218,7 +216,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
                       f'{print_runtime(s0, False)}' + '  '*50)
 
     print(f'{len(new_links) - n_init} new pages crawled{print_runtime(s0, False)}')
-    return train_data, num_chars
+    return data, num_chars
 
 
 

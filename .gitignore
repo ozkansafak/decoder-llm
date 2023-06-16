@@ -1,4 +1,6 @@
-.ipynb_checkpoints/**
+**/.ipynb_checkpoints/**
 **/dataset/**
 **/nohup.out
 **/*.pyc
+
+**/MNIST/**
