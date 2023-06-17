@@ -1,17 +1,16 @@
 # Hyperparameters for transformer model
-batch_size = 12 # (B)
-d_model = 768
-n_heads = 12
-n_layer = 12
-block_size = 1024 # (T) # maximum context length for predictions. Looks at 256 to predict 257
+batch_size = 64 # (B)
+d_model = 384
+n_heads = 6
+n_layer = 6
+block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 learning_rate = 3e-4
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-max_iters = 20000
+max_iters = 1000000
 
 # --------------------------------------
 
-eval_iters = 200
-eval_interval = int((64 * 500) / batch_size)
+eval_num_samples = int((64 * 500 * 64) / batch_size) # sample_no
 
 # --------------------------------------
 

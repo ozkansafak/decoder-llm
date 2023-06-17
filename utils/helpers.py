@@ -125,14 +125,16 @@ def decompose_divs(soup, list_class_names, name=''):
         item.decompose()
 
 
-def plotter(list_epochs, list_losses, list_epochs_eval, list_losses_eval, step=None):
-    list_epochs = np.array(list_epochs) / 1e3
-    list_epochs_eval = np.array(list_epochs_eval) / 1e3
+def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval):
+    step = len(list_losses)
+    
+    list_num_tokens = np.array(list_num_tokens) / 1e3
+    list_num_tokens_eval = np.array(list_num_tokens_eval) / 1e3
     
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5))
-    ax.plot(list_epochs, list_losses, 'k', alpha=.6, label='train')
-    ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,0], 'b.-', alpha=.6, label='train')
-    ax.plot(list_epochs_eval, np.array(list_losses_eval)[:,1], 'r.-', alpha=.6, label='val')
+    ax.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train') 
+    ax.plot(list_num_tokens_eval, np.array(list_losses_eval['train']), 'b.-', alpha=.6, label='train')
+    ax.plot(list_num_tokens_eval, np.array(list_losses_eval['val']), 'r.-', alpha=.6, label='val')
     ax.legend()
     ax.set_title(f'Cross-Entropy Loss (step={step})')
     ax.set_xlabel('thousand samples')
@@ -215,9 +217,8 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
                       f'len(visited_urls):{len(visited_urls)}  '+
                       f'{print_runtime(s0, False)}' + '  '*50)
 
-    print(f'{len(new_links) - n_init} new pages crawled{print_runtime(s0, False)}')
+    print(f'{len(new_links) - n_init} new pages crawled{print_runtime(s0, False)}, num_chars:{num_chars/1e6:.2f}M')
     return data, num_chars
-
 
 
 

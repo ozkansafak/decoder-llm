@@ -22,7 +22,7 @@ class SingleHead(nn.Module):
         k = self.key(x) # (B,T,C)
         q = self.query(x) # (B,T,C)
 
-        # Computer attention scores ("affinities")
+        # Compute attention scores ("affinities")
         wei = q @ k.transpose(-2, -1) / np.sqrt(C)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B,T,T)
         wei = F.softmax(wei, dim=-1) # (B,T,T)
@@ -207,13 +207,16 @@ def plot_character_frequency(urls, wikis):
     return cnt
 
 
-def generate_text(model, step, start=None):
+def generate_text(model, step):
+    
+    s0 = time.time()
+    
     print(f'===>  Text Generation: ')
+    
     print(f''.join(decode(generate(model, torch.ones((1,1), device=device, dtype=torch.long) * 35, 
                                    max_new_tokens=400)[0].tolist()))) 
-    if start is not None:
-        print_runtime(start)
-        print('---' *30)
+    print_runtime(s0)
+    print('---' *30)
 
 
 def generate(model, idx, max_new_tokens):
@@ -241,25 +244,24 @@ def generate(model, idx, max_new_tokens):
     return idx
 
 
-@torch.no_grad()  # tells torch we're never gonna call .backward() 
+@torch.no_grad()  # tells torch we're never gonna call .backward()
 def estimate_loss(model, train_data, val_data, step, start):
+    s0 = time.time()
     losses = {}
     model.eval()
-    s0 = time.time()
-    print('estimating loss...')
+    xb = None
+    
+    print('\nestimating loss... ', end='\r')
     for i, data in enumerate([train_data, val_data]):
-        i_losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            xb, yb = get_batch_at_random(data, batch_size)
+        pivot = 0
+        i_losses = [] 
+        while pivot == 0 or len(xb) == batch_size:
+            xb, yb, pivot = get_batch(data, batch_size, pivot)
             logits, loss = model(xb, yb)
-
-            if device.startswith('cuda') and torch.cuda.device_count() > 1:
-                i_losses[k] = np.mean(loss.tolist())
-            else:
-                i_losses[k] = loss.item()
-        losses['train' if i == 0  else 'val'] = i_losses.mean()
-
-    print(f'step {str(step)+":":5s} train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(s0, False)}')
+            i_losses.append(np.mean(loss.tolist()))
+        losses['train' if i == 0  else 'val'] = np.mean(i_losses)
+        
+    print(f'train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f} {print_runtime(s0, False)}')
 
     model.train()
     return losses
@@ -295,48 +297,81 @@ def get_batch(data, batch_size, pivot=0):
     xb = torch.stack([data[i:i+block_size] for i in ix])
     yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
     xb, yb = xb.to(device), yb.to(device)  # move data to gpu if available
-    
+
     pivot += batch_size * block_size      
     return xb, yb, pivot
 
 
+def load_train_objs(vocab_size, device, learning_rate):
+
+    # instantiate model
+    model = DecoderModel(vocab_size)
+    model = model.to(device) # move model parameters to gpu if available
+
+    # Create a pytorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  # usually 3e-4 for bigger networks.
+
+    return model, optimizer
 
 
+def load_val_data(num_pages):
+
+    # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
+    val_data, val_urls = load_val_data(num_pages)
+    print(f'val_data:{val_data}')
+    return val_data, val_urls
 
 
+def train(model, optimizer, device, batch_size, block_size, xb, yb, num_chars, val_data,
+          list_epochs, list_losses, list_epochs_eval, list_losses_eval, eval_num_samples):
+    """ train loop 
+    """
 
+    start = time.time()
+    step = 0
+    train_data, num_chars = crawl_wiki_data(new_links, visited_urls, num_chars, add, printer=False)
+    xb, yb, pivot = get_batch(train_data, batch_size, pivot=0)
 
+    while step < max_iters:
+        step += 1
+        num_tokens = step * batch_size * block_size  #  num of tokens ingested.
+        sample_no = step * batch_size * torch.cuda.device_count()
 
+        while len(xb) < batch_size:
+            repo_xb, repo_yb, pivot = xb, yb, 0
+            train_data, num_chars = crawl_wiki_data(new_links, visited_urls, num_chars, add, printer=False)
 
+            # Sample a batch of data to complete to the "batch_size"
+            xb, yb, pivot = get_batch(train_data, batch_size - len(xb), pivot)
+            xb = torch.cat((repo_xb, xb))
+            yb = torch.cat((repo_yb, yb))
 
+        # Evaluate the loss
+        logits, loss = model(xb, yb)
 
+        # Average if trained on multi-GPUs 
+        loss = loss.mean()
 
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward() # get the gradients with backprop.
+        optimizer.step() # apply the gradient on the parameters
 
+        list_losses.append(loss.item())
+        list_num_tokens.append(sample_no)
 
+        # evaluate at fixed intervals
+        if sample_no % (eval_num_samples//4) == 0:
+            list_num_tokens_eval.append(sample_no)
+            out = estimate_loss(model, train_data[-len(val_data):], val_data, step, start)
+            list_losses_eval['val'].append(out['val'])
+            list_losses_eval['train'].append(out['train'])
+            plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval)
 
+        if sample_no % (eval_num_samples * 4) == 0:
+            generate_text(model, step, start)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        if step % 10 == 0: 
+            print(f'step:{step:3d}  loss:{loss.item():.3f}  {print_runtime(start, False)}', end='\r')
 
 
 
