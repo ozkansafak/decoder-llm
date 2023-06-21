@@ -148,6 +148,7 @@ def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval
         delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=18) + datetime.timedelta(seconds=36)
         dt = datetime.datetime.now(pst) + delta
         prefix = dt.isoformat().split('.')[0]
+        prefix = prefix.replace('T', ' ')
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
         print(f'figures/loss_{prefix}.png')
         plt.show()

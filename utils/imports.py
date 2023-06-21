@@ -24,7 +24,7 @@ assert d_model / n_heads % 1 == 0
 
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4"
 
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
 from collections import Counter
@@ -62,9 +62,9 @@ def print_runtime(start, printer=True):
         print(f'Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec')
         return None
     else:
-        return f' ({int((end-start)//60)} min {int((end-start)%60):2d} sec)'
+        return f'({int((end-start)//60)} min {int((end-start)%60):2d} sec)'
 
-    
+
 def count_parameters(model):
     table = PrettyTable(["Modules", "Parameters"])
     total_params = 0
@@ -76,7 +76,7 @@ def count_parameters(model):
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
-    
+
 new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
 print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
 
