@@ -1,18 +1,21 @@
-from utils.imports import *
+import os
+import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
+from collections import Counter
+from urllib.request import urlopen
+from bs4 import BeautifulSoup
+import numpy as np
+from pprint import pprint
+import torch
+from torch import nn
+from torch.nn import functional as F
+from prettytable import PrettyTable
 
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 
-# request children pages wiki pages starting with the root page.
-url = "https://www.wikipedia.org/wiki/David_Bowie"
-new_links = [url]
-# ------------------------------------------------
-
-vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
-list_vocab = sorted(vocab)
-vocab_size = len(vocab)
-_stoi = {c:i for i, c in enumerate(list_vocab)}
-_itos = {i:c for i, c in enumerate(list_vocab)}
-_encode = lambda s: [_stoi[c] for c in s]  # takes in a string, output list of integers
-decode = lambda inp: [_itos[i] for i in inp]  # input a list of integers, outputs a string
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, list_vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode, plt, pylab
 
 
 def load_val_data(num_pages=20, printer=False):
@@ -23,12 +26,11 @@ def load_val_data(num_pages=20, printer=False):
     val_data = []
     for i, url in enumerate(val_urls[:num_pages]):
         text, html, _num_chars = extract_single_url(url, visited_urls, _num_chars)
-        val_data.append(torch.tensor(_encode(text), dtype=torch.long))
+        val_data.append(torch.tensor(encode(text), dtype=torch.long))
         if printer: 
             print(f'{i:2d}  {url}')
     
     val_data = torch.cat(val_data)
-
     
     return val_data, val_urls[:num_pages]
 
@@ -120,21 +122,20 @@ def shave(new_links, visited_urls):
 def decompose_divs(soup, list_class_names, name=''):
     if type(list_class_names) == str:
         list_class_names = [list_class_names]
-    items = soup.find_all("div", {"class": list_class_names})
+    items = soup.find_all("div", {"class": list_class_names}) 
     for item in items:
         item.decompose()
 
 
-def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval):
+def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval, savefig=False):
     step = len(list_losses)
-    
     list_num_tokens = np.array(list_num_tokens) / 1e3
     list_num_tokens_eval = np.array(list_num_tokens_eval) / 1e3
     
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5))
-    ax.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train') 
-    ax.plot(list_num_tokens_eval, np.array(list_losses_eval['train']), 'b.-', alpha=.6, label='train')
-    ax.plot(list_num_tokens_eval, np.array(list_losses_eval['val']), 'r.-', alpha=.6, label='val')
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5)) 
+    ax.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
+    ax.plot(list_num_tokens_eval, list_losses_eval['train'], 'b.-', alpha=.4, label='train')
+    ax.plot(list_num_tokens_eval, list_losses_eval['val'], 'r.-', alpha=.4, label='val')
     ax.legend()
     ax.set_title(f'Cross-Entropy Loss (step={step})')
     ax.set_xlabel('thousand samples')
@@ -142,7 +143,16 @@ def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval
     ax.set_ylim(0)
     yticks = ax.get_yticks()
     ax.set_yticks(range(0, int(max(yticks))))
-    plt.show()
+    if savefig:
+        pst = pytz.timezone('US/Pacific')
+        delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=18) + datetime.timedelta(seconds=36)
+        dt = datetime.datetime.now(pst) + delta
+        prefix = dt.isoformat().split('.')[0]
+        plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
+        print(f'figures/loss_{prefix}.png')
+        plt.show()
+    else:
+        plt.show()
 
 
 def clean_up(text, vocab):
@@ -177,7 +187,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
     """
     
     s0 = time.time()
-    print(f'crawl_wiki_data: add={add/1e6:.2f}M characters... ', end='')
+    print(f'crawl_wiki_data: add={add/1e6:.2f}M characters... ', end='') 
 
     # initialize variables
     num_chars_init = num_chars
@@ -185,6 +195,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
     n_init = len(new_links)
 
     shave(new_links, visited_urls)
+    if printer: print()
 
     while num_chars < num_chars_init + add:
         url = new_links.pop(0)
@@ -197,28 +208,22 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
 
         text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
         new_links.extend(get_links(html, new_links, visited_urls))
-        data.append(torch.tensor(_encode(text), dtype=torch.long))
+        data.append(torch.tensor(encode(text), dtype=torch.long))
 
         if printer: print(f'page_length:{len(text)/1000:5.1f}K, '+
                           f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
-                          f'num_chars:{ptxt(num_chars)}  {url}' + 
-                          ' '*70
-                          , end='\n')
-
+                          f'num_chars:{ptxt(num_chars)}  {url}')
+            
     """   todo: get_batch() needs to take as input one page and it should output number of batches mined.
                 For now, I'm concatenating all the wiki pages in a single torch.tensor data.
                 The last sentence of a page is preceded by the first sentence of the next page.
     """
     
-    data = torch.cat(data).to(device)
+    data = torch.cat(data)
 
-    if printer: print(f'Exiting crawl_wiki_data(): '+
-                      f'len(new_links): {len(new_links)}  '+
-                      f'len(visited_urls):{len(visited_urls)}  '+
-                      f'{print_runtime(s0, False)}' + '  '*50)
-
-    print(f'{len(new_links) - n_init} new pages crawled{print_runtime(s0, False)}, num_chars:{num_chars/1e6:.2f}M')
+    print(f'{len(new_links) - n_init} new pages crawled {print_runtime(s0, False)}')
     return data, num_chars
+
 
 
 

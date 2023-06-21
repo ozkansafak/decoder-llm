@@ -1,63 +1,59 @@
 # Hyperparameters for transformer model
-batch_size = 64 # (B)
-d_model = 384
-n_heads = 6
-n_layer = 6
+batch_size = 128 # (B)
+d_model = 768
+n_heads = 24
+n_layer = 12
+learning_rate = 3e-5
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
-learning_rate = 3e-4
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-max_iters = 1000000
+max_iters = 100000
 
 # --------------------------------------
 
-eval_num_samples = int((64 * 500 * 64) / batch_size) # sample_no
+eval_steps = 10
 
 # --------------------------------------
 
-num_chars = 0
+num_chars = 0 
 visited_urls = dict()
 add = 2.5e6 # number of tokens to be crawled 
-# d_model = d_head * n_heads # (C) --each head is 64 dimensional
 d_head = int(d_model / n_heads)
 
-
 assert d_model / n_heads % 1 == 0
-# set the visible GPUs for CUDA to use.
+
+
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 
-from IPython.core.display import display, HTML
-display(HTML("<style>.container { width:100% !important; }</style>"))
-import ipdb, re, time, sys, pickle, glob, json, random, unidecode, unicodedata
-from IPython.display import clear_output
+import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
 from collections import Counter
 from urllib.request import urlopen
 from bs4 import BeautifulSoup
-
 import numpy as np
 from pprint import pprint
-from IPython.core.display import display, HTML
-import matplotlib.pyplot as plt
-import matplotlib.pylab as pylab
 import torch
 from torch import nn
 from torch.nn import functional as F
-import tiktoken
 from prettytable import PrettyTable
+import matplotlib.pyplot as plt
+import matplotlib.pylab as pylab
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 
-pylab.rcParams.update({'legend.fontsize': 'small',
-                       'font.size'      : 14,
-                       'figure.figsize' : (9, 3.5),
-                       'axes.labelsize' : 'medium',
-                       'axes.titlesize' : 'medium',
-                       'axes.grid'      : 'on',
-                       'xtick.labelsize': 'medium',
-                       'ytick.labelsize': 'medium'})
+# device = 'cuda:7'
 
-print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
+# ------------------------------------------------
+vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
+list_vocab = sorted(vocab)
+vocab_size = len(vocab)
+_stoi = {c:i for i, c in enumerate(list_vocab)}
+_itos = {i:c for i, c in enumerate(list_vocab)}
+encode = lambda s: [_stoi[c] for c in s]  # takes in a string, output list of integers
+decode = lambda inp: [_itos[i] for i in inp]  # input a list of integers, outputs a string
 
 
 def print_runtime(start, printer=True):
@@ -66,7 +62,7 @@ def print_runtime(start, printer=True):
         print(f'Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec')
         return None
     else:
-        return f' (...Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec)'
+        return f' ({int((end-start)//60)} min {int((end-start)%60):2d} sec)'
 
     
 def count_parameters(model):
@@ -81,3 +77,15 @@ def count_parameters(model):
     print(f"Total Trainable Params: {total_params}")
     return total_params
     
+new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
+print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
+
+pylab.rcParams.update({'legend.fontsize': 'small',
+                       'font.size'      : 14,
+                       'figure.figsize' : (9, 3.5),
+                       'axes.labelsize' : 'medium',
+                       'axes.titlesize' : 'medium',
+                       'axes.grid'      : 'on',
+                       'xtick.labelsize': 'medium',
+                       'ytick.labelsize': 'medium'})
+

@@ -10,7 +10,7 @@ from datautils import MyTrainDataset
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler  # distributes data across GPUs
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
+from torch.distributed import init_process_group, destroy_process_group 
 
 
 def ddp_setup(rank, world_size):

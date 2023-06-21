@@ -2,5 +2,8 @@
 **/dataset/**
 **/nohup.out
 **/*.pyc
-
+**/figures/**
 **/MNIST/**
+**.gz
+*.log
+transformer_tutorial/**
