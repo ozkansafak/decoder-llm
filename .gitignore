@@ -7,3 +7,4 @@
 **.gz
 *.log
 transformer_tutorial/**
+**/text_output/**

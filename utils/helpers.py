@@ -9,13 +9,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from prettytable import PrettyTable
+import tiktoken 
 
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, list_vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode, plt, pylab
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, enc, plt, pylab
 
 
 def load_val_data(num_pages=20, printer=False):
@@ -26,7 +27,7 @@ def load_val_data(num_pages=20, printer=False):
     val_data = []
     for i, url in enumerate(val_urls[:num_pages]):
         text, html, _num_chars = extract_single_url(url, visited_urls, _num_chars)
-        val_data.append(torch.tensor(encode(text), dtype=torch.long))
+        val_data.append(torch.tensor(enc.encode(text), dtype=torch.long))
         if printer: 
             print(f'{i:2d}  {url}')
     
@@ -118,7 +119,7 @@ def shave(new_links, visited_urls):
 
     return
 
-    
+
 def decompose_divs(soup, list_class_names, name=''):
     if type(list_class_names) == str:
         list_class_names = [list_class_names]
@@ -148,10 +149,9 @@ def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval
         delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=18) + datetime.timedelta(seconds=36)
         dt = datetime.datetime.now(pst) + delta
         prefix = dt.isoformat().split('.')[0]
-        prefix = prefix.replace('T', ' ')
+        prefix = prefix.replace('T', ' | ')
+        print(f'Saving figures/loss_{prefix}.png')
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
-        print(f'figures/loss_{prefix}.png')
-        plt.show()
     else:
         plt.show()
 
@@ -163,7 +163,7 @@ def clean_up(text, vocab):
         if c not in vocab:
             list_text[i] = ' '
 
-    # idx: indices to be removed because they're followed by another white space.
+    # idx: Remove the indices that are whitespaces and are followed by another white space.
     idx = [i for i in range(len(list_text)-1) if list_text[i] == list_text[i+1] == ' ']
     list_text = [list_text[i] for i in range(len(list_text)) if i not in set(idx)]
     
@@ -183,12 +183,12 @@ def ptxt(num_chars):
     return txt
 
 
-def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
+def crawl_wiki_data(device, new_links, visited_urls, num_chars, add, printer=False):
     """ :param add: number of tokens to be crawled and added.
     """
     
     s0 = time.time()
-    print(f'crawl_wiki_data: add={add/1e6:.2f}M characters... ', end='') 
+    print(f'crawl_wiki_data: cuda:{device} add={add/1e6:.2f}M chars ', end='') 
 
     # initialize variables
     num_chars_init = num_chars
@@ -209,7 +209,7 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
 
         text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
         new_links.extend(get_links(html, new_links, visited_urls))
-        data.append(torch.tensor(encode(text), dtype=torch.long))
+        data.append(torch.tensor(enc.encode(text), dtype=torch.long))
 
         if printer: print(f'page_length:{len(text)/1000:5.1f}K, '+
                           f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
@@ -221,9 +221,28 @@ def crawl_wiki_data(new_links, visited_urls, num_chars, add=5e5, printer=False):
     """
     
     data = torch.cat(data)
+    head = 'https://www.wikipedia.org/wiki/'
+    list_urls = [item.split(head)[1] for item in (visited_urls)]
+    all_visited_urls = {}
+    torch.distributed.all_gather_object(all_visited_urls, visited_urls)
+    all_visited_urls = sorted([item.split(head)[1] for item in (visited_urls)])
+    with open (f'text_output/cuda:{device}_{num_chars_init}_visited_urls.txt', 'w') as f:
+        json.dump(all_visited_urls, f)
 
-    print(f'{len(new_links) - n_init} new pages crawled {print_runtime(s0, False)}')
+    print(f'cuda:{device}, len(visited_urls):{len(visited_urls)}, visited_urls:{list_urls}')
+    print(f'cuda:{device}  {len(new_links) - n_init} new pages crawled in {print_runtime(s0, False)[1:-1]}.')
+    
+    
     return data, num_chars
+
+
+
+
+
+
+
+
+
 
 
 

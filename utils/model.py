@@ -9,14 +9,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from prettytable import PrettyTable
+import tiktoken 
 
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, list_vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, enc
 
 from utils.helpers import load_val_data, extract_single_url, get_links, shave, decompose_divs, plotter, clean_up, ptxt, crawl_wiki_data
 
@@ -107,7 +107,7 @@ class Block(nn.Module):
 
 
 class DecoderModel(nn.Module):
-    def __init__(self, vocab_size, rank):
+    def __init__(self, vocab_size, device):
         super().__init__()
         # each token directly reads the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, d_model)
@@ -115,14 +115,14 @@ class DecoderModel(nn.Module):
         self.blocks = nn.Sequential(*[Block(d_model, n_heads) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(d_model) # final layer norm
         self.lm_head = nn.Linear(d_model, vocab_size)
-        self.rank = rank
+        self.device = device
         self.print_hyperparams_to_stdout()
         
     def forward(self, idx, targets=None):
         B, T = idx.shape
         # idx and targets are both (B,T) tensor of integers
         token_embeddings = self.token_embedding_table(idx)  # (B,T,C) = (batch, time, vocab_size) = (4, 8, 65)
-#         position_embeddings = self.position_embedding_table(torch.arange(T, device=self.rank)) # (T,C)
+#         position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (T,C)
         position_embeddings = 0
         x = token_embeddings + position_embeddings # (B,T,C)
         x = self.blocks(x) # (B,T,C)
@@ -159,7 +159,7 @@ class DecoderModel(nn.Module):
         elif num_params < 1e12:
             print(f"num_params: {int(num_params * 1e-9)}B")
 
-        print(f'self.rank:{self.rank}')
+        print(f'self.device:{self.device}')
         table = PrettyTable(['d_model', 'n_layer', 'n_heads', 'd_head', 'block_size', 'batch_size', 'learning_rate'])
         table.add_row([d_model, n_layer, n_heads, d_head, block_size, batch_size, learning_rate])
         print(table)
@@ -167,13 +167,13 @@ class DecoderModel(nn.Module):
         return num_params
 
 
-def generate_text(model, rank, start=None):
+def generate_text(model, device, start=None):
     if start is None:
         start = time.time()
     print(f'===>  Text Generation: ')
-    print(f''.join(decode(generate(model, 
-                                   idx=torch.ones((1,1), device=rank, dtype=torch.long) * 35, 
-                                   max_new_tokens=400)[0].tolist()))) 
+    print(f''.join(enc.decode(generate(model, 
+                                       idx=torch.ones((1,1), device=device, dtype=torch.long) * 35, 
+                                       max_new_tokens=400)[0].tolist()))) 
     print_runtime(start)
     print('---' *30)
 
@@ -204,7 +204,7 @@ def generate(model, idx, max_new_tokens):
 
 
 @torch.no_grad()  # tells torch we're never gonna call .backward()
-def estimate_loss(model, train_data, val_data, rank):
+def estimate_loss(model, train_data, val_data, device):
     s0 = time.time()
     losses = {}
     print('\nestimating loss... ', end='')
@@ -213,7 +213,7 @@ def estimate_loss(model, train_data, val_data, rank):
         pivot = 0
         i_losses = [] 
         while pivot == 0 or len(xb) == batch_size:
-            xb, yb, pivot = get_batch(data, rank, pivot)
+            xb, yb, pivot = get_batch(data, device, pivot)
             logits, loss = model(xb, yb)
             i_losses.append(np.mean(loss.tolist()))
         losses['train' if i == 0  else 'val'] = np.mean(i_losses)
@@ -226,10 +226,10 @@ def estimate_loss(model, train_data, val_data, rank):
     return losses
 
 
-def load_train_objs(vocab_size, rank, learning_rate):
+def load_train_objs(vocab_size, device, learning_rate):
 
     # instantiate model
-    model = DecoderModel(vocab_size, rank)
+    model = DecoderModel(vocab_size, device)
  
     # Create a pytorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  # usually 3e-4 for bigger networks.
@@ -237,7 +237,7 @@ def load_train_objs(vocab_size, rank, learning_rate):
     return model, optimizer
 
 
-def get_batch(data, rank, pivot):
+def get_batch(data, device, pivot):
     """   todo: Take one page as input.
     """
     
@@ -283,7 +283,7 @@ class MyDataset(torch.utils.data.Dataset):
         return self.data[idx], self.targets[idx]
 
 
-def train(model, optimizer, rank, num_chars, val_data, 
+def train(device, model, optimizer, num_chars, val_data, 
           list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval, eval_steps, pend='\r'):
 
     start = time.time()
@@ -296,7 +296,7 @@ def train(model, optimizer, rank, num_chars, val_data,
         step += 1
 
         # crawl a new batch of wiki pages
-        train_data, num_chars = crawl_wiki_data(new_links, visited_urls, num_chars, add//10, printer=False)
+        train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add//100, printer=False)
 
         # wrap the data in DataLoader class. 
         mydataset = MyDataset(train_data, block_size)
@@ -326,33 +326,19 @@ def train(model, optimizer, rank, num_chars, val_data,
             # evaluate at fixed intervals
             if step % eval_steps == 0 and batch_no == (len(train_loader) - 1):
                 print(f'step:{step:3d}')
-                out = estimate_loss(model, val_data, val_data, rank)
+                out = estimate_loss(model, val_data, val_data, device)
                 list_losses_eval['train'].append(out['train'])
                 list_losses_eval['val'].append(out['val'])
                 list_num_tokens_eval.append(num_tokens)
                 plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval, savefig=True)
 
             if step % (eval_steps * 4) == 0:
-                generate_text(model, rank) 
+                generate_text(model, device) 
 
-        print(f'step:{step:3d} num_pages:{len(visited_urls):02d}  '+
+        print(f'cuda:{device} step:{step:3d} num_pages:{len(visited_urls):02d}  '+
               f'{"FINISHED " if step == max_iters else ""} train():{print_runtime(start, False)[1:-1]}', end='\n')
 
 
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
         
         
         

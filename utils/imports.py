@@ -38,22 +38,32 @@ from torch.nn import functional as F
 from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
+import tiktoken 
+from tiktoken_ext.openai_public import ENCODING_CONSTRUCTORS
 
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-# device = 'cuda:7'
 
 # ------------------------------------------------
 vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
-list_vocab = sorted(vocab)
-vocab_size = len(vocab)
-_stoi = {c:i for i, c in enumerate(list_vocab)}
-_itos = {i:c for i, c in enumerate(list_vocab)}
-encode = lambda s: [_stoi[c] for c in s]  # takes in a string, output list of integers
-decode = lambda inp: [_itos[i] for i in inp]  # input a list of integers, outputs a string
+# list_vocab = sorted(vocab)
+# vocab_size = len(vocab)
+# _stoi = {c:i for i, c in enumerate(list_vocab)}
+# _itos = {i:c for i, c in enumerate(list_vocab)}
+# encode = lambda s: [_stoi[c] for c in s]  # takes in a string, output list of integers
+# decode = lambda inp: [_itos[i] for i in inp]  # input a list of integers, outputs a string
+
+encFunc = ENCODING_CONSTRUCTORS['gpt2']
+encDict = encFunc()
+enc = tiktoken.Encoding(encDict['name'],
+                        pat_str=encDict['pat_str'],
+                        mergeable_ranks=encDict['mergeable_ranks'],
+                        special_tokens=encDict['special_tokens' ])
+
+vocab_size = enc.n_vocab
 
 
 def print_runtime(start, printer=True):
