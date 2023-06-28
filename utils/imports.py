@@ -1,15 +1,12 @@
 # Hyperparameters for transformer model
-batch_size = 128 # (B)
+batch_size = 64 # (B)
 d_model = 768
-n_heads = 24
+n_heads = 12
 n_layer = 12
 learning_rate = 3e-5
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 max_iters = 100000
-
-# --------------------------------------
-
 eval_steps = 10
 
 # --------------------------------------
@@ -49,12 +46,6 @@ from torch.distributed import init_process_group, destroy_process_group
 
 # ------------------------------------------------
 vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
-# list_vocab = sorted(vocab)
-# vocab_size = len(vocab)
-# _stoi = {c:i for i, c in enumerate(list_vocab)}
-# _itos = {i:c for i, c in enumerate(list_vocab)}
-# encode = lambda s: [_stoi[c] for c in s]  # takes in a string, output list of integers
-# decode = lambda inp: [_itos[i] for i in inp]  # input a list of integers, outputs a string
 
 encFunc = ENCODING_CONSTRUCTORS['gpt2']
 encDict = encFunc()
@@ -82,10 +73,11 @@ def count_parameters(model):
         if not parameter.requires_grad: continue
         params = parameter.numel()
         table.add_row([name, params])
-        total_params+=params
+        total_params += params
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
+
 
 new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
 print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")

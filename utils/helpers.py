@@ -105,9 +105,9 @@ def get_links(html, new_links, visited_urls):
     
     # only retain URLs that are not in `visited_url`
     set_exclude = set(visited_urls.keys()).union(set(new_links))
-    links = [url for url in links if url not in set_exclude]
+    new_links = [url for url in links if url not in set_exclude]
 
-    return links
+    return new_links
 
 
 def shave(new_links, visited_urls):
@@ -215,7 +215,7 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add, printer=Fal
                           f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
                           f'num_chars:{ptxt(num_chars)}  {url}')
             
-    """   todo: get_batch() needs to take as input one page and it should output number of batches mined.
+    """   todo: get_batch() needs to take as input a single wiki page and it should output number of batches mined.
                 For now, I'm concatenating all the wiki pages in a single torch.tensor data.
                 The last sentence of a page is preceded by the first sentence of the next page.
     """
@@ -224,6 +224,7 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add, printer=Fal
     head = 'https://www.wikipedia.org/wiki/'
     list_urls = [item.split(head)[1] for item in (visited_urls)]
     all_visited_urls = {}
+    
     torch.distributed.all_gather_object(all_visited_urls, visited_urls)
     all_visited_urls = sorted([item.split(head)[1] for item in (visited_urls)])
     with open (f'text_output/cuda:{device}_{num_chars_init}_visited_urls.txt', 'w') as f:

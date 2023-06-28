@@ -44,7 +44,7 @@ def main(device, world_size, pend):
     # instantiate model
     model, optimizer = load_train_objs(vocab_size, device, learning_rate)
     model.to(device)
-    model = DDP(model, device_ids=[device], find_unused_parameters=True) # move model parameters to gpu if available
+    model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
     # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
     val_data, val_urls = load_val_data(num_pages=10)
@@ -67,14 +67,12 @@ if __name__ == '__main__':
     print(f'world_size:{world_size}')
     mp.spawn(main, args=(world_size, args.pend), nprocs=world_size)
 
-
-
     """
         NOTES:
          -  plotter variable 'list_num_tokens', 'list_losses'..  how are they being reduced?
          -  Only Master GPU should do the plotting. 
          -  'visited_urls' should be gathered into 'all_visited_urls'
-
+         -  URLs shold be crawled and stored in a json file. Then loaded and distributed to GPUs.
          
     """
 
