@@ -1,19 +1,19 @@
 # Hyperparameters for transformer model
-batch_size = 64 # (B)
 d_model = 768
 n_heads = 12
 n_layer = 12
-learning_rate = 3e-5
+learning_rate = 9e-5
+batch_size = 64 # (B)
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-max_iters = 100000
-eval_steps = 10
+max_iters = 10000
+eval_steps = 30
 
 # --------------------------------------
 
 num_chars = 0 
 visited_urls = dict()
-add = 2.5e6 # number of tokens to be crawled 
+add = 5e6 # number of characters to be crawled 
 d_head = int(d_model / n_heads)
 
 assert d_model / n_heads % 1 == 0
@@ -21,7 +21,7 @@ assert d_model / n_heads % 1 == 0
 
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
 
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
 from collections import Counter
@@ -63,7 +63,10 @@ def print_runtime(start, printer=True):
         print(f'Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec')
         return None
     else:
-        return f'({int((end-start)//60)} min {int((end-start)%60):2d} sec)'
+        if int((end-start)//60) == 0:
+            return f'({int((end-start)%60)} sec)'
+        else:
+            return f'({int((end-start)//60)} min {int((end-start)%60):2d} sec)'
 
 
 def count_parameters(model):

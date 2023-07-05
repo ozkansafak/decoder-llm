@@ -19,7 +19,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, enc, plt, pylab
 
 
-def load_val_data(num_pages=20, printer=False):
+def load_val_data(device, num_pages=20):
     with open('dataset/val_wiki.json', 'r') as _f:
         val_urls = json.load(_f)
         
@@ -28,11 +28,9 @@ def load_val_data(num_pages=20, printer=False):
     for i, url in enumerate(val_urls[:num_pages]):
         text, html, _num_chars = extract_single_url(url, visited_urls, _num_chars)
         val_data.append(torch.tensor(enc.encode(text), dtype=torch.long))
-        if printer: 
-            print(f'{i:2d}  {url}')
     
-    val_data = torch.cat(val_data)
-    
+    val_data = torch.cat(val_data).to(device)
+    print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
     return val_data, val_urls[:num_pages]
 
 
@@ -128,17 +126,20 @@ def decompose_divs(soup, list_class_names, name=''):
         item.decompose()
 
 
-def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval, savefig=False):
+def plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=False):
+    if device != 0:
+        return
+    
+    print(f'plotter cuda:{device}, len(list_num_tokens):{len(list_num_tokens)}')
     step = len(list_losses)
     list_num_tokens = np.array(list_num_tokens) / 1e3
-    list_num_tokens_eval = np.array(list_num_tokens_eval) / 1e3
+    list_num_tokens_val = np.array(list_num_tokens_val) / 1e3
     
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5)) 
     ax.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
-    ax.plot(list_num_tokens_eval, list_losses_eval['train'], 'b.-', alpha=.4, label='train')
-    ax.plot(list_num_tokens_eval, list_losses_eval['val'], 'r.-', alpha=.4, label='val')
+    ax.plot(list_num_tokens_val, list_losses_val, 'r.-', alpha=.4, label='val')
     ax.legend()
-    ax.set_title(f'Cross-Entropy Loss (step={step})')
+    ax.set_title(f'Cross-Entropy Loss (device={device}, step={step})')
     ax.set_xlabel('thousand samples')
     ax.set_xlim(0)
     ax.set_ylim(0)
@@ -146,7 +147,7 @@ def plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval
     ax.set_yticks(range(0, int(max(yticks))))
     if savefig:
         pst = pytz.timezone('US/Pacific')
-        delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=18) + datetime.timedelta(seconds=36)
+        delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=20) + datetime.timedelta(seconds=42)
         dt = datetime.datetime.now(pst) + delta
         prefix = dt.isoformat().split('.')[0]
         prefix = prefix.replace('T', ' | ')
@@ -183,27 +184,25 @@ def ptxt(num_chars):
     return txt
 
 
-def crawl_wiki_data(device, new_links, visited_urls, num_chars, add, printer=False):
-    """ :param add: number of tokens to be crawled and added.
+def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
+    """ :param add: number of characters to be crawled and added.
     """
-    
+
     s0 = time.time()
-    print(f'crawl_wiki_data: cuda:{device} add={add/1e6:.2f}M chars ', end='') 
 
     # initialize variables
     num_chars_init = num_chars
     data = []
-    n_init = len(new_links)
+    n0 = len(new_links)
 
     shave(new_links, visited_urls)
-    if printer: print()
 
     while num_chars < num_chars_init + add:
         url = new_links.pop(0)
         if url in visited_urls:
-            print(f'WARNING: url in visited_urls!!!    ')
+            print(f'WARNING: url in visited_urls!!!    cuda:{device}')
             stop_execution
-            
+
         # shuffle new_links in place
         random.shuffle(new_links)
 
@@ -211,29 +210,25 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add, printer=Fal
         new_links.extend(get_links(html, new_links, visited_urls))
         data.append(torch.tensor(enc.encode(text), dtype=torch.long))
 
-        if printer: print(f'page_length:{len(text)/1000:5.1f}K, '+
-                          f'len(new_links):{len(new_links)}, len(visited_urls):{len(visited_urls)}, '+ 
-                          f'num_chars:{ptxt(num_chars)}  {url}')
-            
     """   todo: get_batch() needs to take as input a single wiki page and it should output number of batches mined.
                 For now, I'm concatenating all the wiki pages in a single torch.tensor data.
                 The last sentence of a page is preceded by the first sentence of the next page.
     """
-    
+
     data = torch.cat(data)
     head = 'https://www.wikipedia.org/wiki/'
     list_urls = [item.split(head)[1] for item in (visited_urls)]
-    all_visited_urls = {}
     
-    torch.distributed.all_gather_object(all_visited_urls, visited_urls)
-    all_visited_urls = sorted([item.split(head)[1] for item in (visited_urls)])
-    with open (f'text_output/cuda:{device}_{num_chars_init}_visited_urls.txt', 'w') as f:
-        json.dump(all_visited_urls, f)
+#     all_visited_urls = {}
+#     torch.distributed.all_gather_object(all_visited_urls, visited_urls)
+#     all_visited_urls = sorted([item.split(head)[1] for item in (visited_urls)])
+#     with open (f'text_output/cuda:{device}_{num_chars_init}_visited_urls.txt', 'w') as f:
+#         json.dump(all_visited_urls, f)
 
-    print(f'cuda:{device}, len(visited_urls):{len(visited_urls)}, visited_urls:{list_urls}')
-    print(f'cuda:{device}  {len(new_links) - n_init} new pages crawled in {print_runtime(s0, False)[1:-1]}.')
-    
-    
+    print(f'crawl_wiki_data: cuda:{device}, add={add/1e6:.2f}M chars, len(visited_urls):{len(visited_urls)}, '+
+          f'number of new pages crawled: {len(new_links) - n0} '+
+          f'{print_runtime(s0, False)}\n')
+
     return data, num_chars
 
 

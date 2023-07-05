@@ -122,7 +122,7 @@ class DecoderModel(nn.Module):
         B, T = idx.shape
         # idx and targets are both (B,T) tensor of integers
         token_embeddings = self.token_embedding_table(idx)  # (B,T,C) = (batch, time, vocab_size) = (4, 8, 65)
-#         position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (T,C)
+        position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (T,C)
         position_embeddings = 0
         x = token_embeddings + position_embeddings # (B,T,C)
         x = self.blocks(x) # (B,T,C)
@@ -167,63 +167,64 @@ class DecoderModel(nn.Module):
         return num_params
 
 
-def generate_text(model, device, start=None):
-    if start is None:
-        start = time.time()
-    print(f'===>  Text Generation: ')
-    print(f''.join(enc.decode(generate(model, 
-                                       idx=torch.ones((1,1), device=device, dtype=torch.long) * 35, 
-                                       max_new_tokens=400)[0].tolist()))) 
-    print_runtime(start)
+class MyDataset(torch.utils.data.Dataset):
+    def __init__(self, train_data, block_size):
+        if len(train_data) % block_size == 0:
+            # if train_set doesn't have an extra token as target for the last sample, put a dot (.) artificially.
+            print(f'\n ===> MyDataset.__init__(): len(train_data) % block_size == 0\n')
+            train_data = torch.cat((train_data, torch.tensor([enc.encode('.')], dtype=torch.long)))
+
+        total_batches = len(train_data)//block_size
+        train_data2 = train_data[:total_batches * block_size]
+        train_data2 = train_data2.view(total_batches, block_size)
+        train_targets = train_data[1:total_batches*block_size+1]
+        train_targets2 = train_targets.view(total_batches, block_size)
+
+        self.data = train_data2
+        self.targets = train_targets2
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.targets[idx]
+
+
+def generate_text(model, device, step, loss):
+    
+    s0 = time.time()
+
+    seed_text = 'Into the flood again'
+    seed_tokens = torch.as_tensor(enc.encode(seed_text), device=device, dtype=torch.long).view(1,-1)
+
+    output = (f''.join(enc.decode(generate_tokens(model, device, idx=seed_tokens).tolist()))) 
+    print(f'\n===>  Text Generation cuda:{device}, step:{step}, loss:{loss} {print_runtime(s0, False)}')
+    print(output)
+    print()
     print('---' *30)
 
 
-def generate(model, idx, max_new_tokens):
+def generate_tokens(model, device, idx, max_new_tokens=200):
     # idx is (B, T) array of indices in the current context
 
     for _ in range(max_new_tokens):
-        # crop idx to the last block_size tokens
-        idx_cond = idx[:, -block_size:]
-
         # get prediction 
-        logits, _ = model(idx_cond)
+        # crop idx to the last block_size tokens
+        logits, _ = model(idx[:, -block_size:]) # logits.shape: (1, T, n_vocab) 
 
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
 
         # apply softmax to get probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
-
+        
         # sample from the distribution
         idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
 
         # append sampled index to the running sequence
         idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
 
-    return idx
-
-
-@torch.no_grad()  # tells torch we're never gonna call .backward()
-def estimate_loss(model, train_data, val_data, device):
-    s0 = time.time()
-    losses = {}
-    print('\nestimating loss... ', end='')
-    model.eval()
-    for i, data in enumerate([train_data[-len(val_data):], val_data]):
-        pivot = 0
-        i_losses = [] 
-        while pivot == 0 or len(xb) == batch_size:
-            xb, yb, pivot = get_batch(data, device, pivot)
-            logits, loss = model(xb, yb)
-            i_losses.append(np.mean(loss.tolist()))
-        losses['train' if i == 0  else 'val'] = np.mean(i_losses)
-
-    mb1 = train_data.element_size() * train_data.nelement() * 1e-6
-    mb2 = val_data.element_size() * val_data.nelement() * 1e-6
-    print(f'train_loss:{losses["train"]:.4f}, val_loss:{losses["val"]:.4f},  Memory:{mb1+mb2}MB {print_runtime(s0, False)}')
-
-    model.train()
-    return losses
+    return idx[0]
 
 
 def load_train_objs(vocab_size, device, learning_rate):
@@ -237,54 +238,26 @@ def load_train_objs(vocab_size, device, learning_rate):
     return model, optimizer
 
 
-def get_batch(data, device, pivot):
-    """   todo: Take one page as input.
-    """
-    
-    if len(data) - pivot < (batch_size * block_size):
-        procured_batch_size = (len(data) - pivot) // block_size
-        print(f' ==> get_batch: procured_batch_size = {procured_batch_size} out of {batch_size} requested')
-        if procured_batch_size == 0:
-            xb = torch.zeros((0, block_size), dtype=torch.long)
-            yb = torch.zeros((0, block_size), dtype=torch.long)
-            xb, yb = xb, yb  # move data to gpu if available 
-            pivot = 0
-            return xb, yb, pivot
-    
-    ix = torch.arange(start=pivot, end=len(data) - block_size, step=block_size)[:batch_size]
-    xb = torch.stack([data[i:i+block_size] for i in ix])
-    yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    xb, yb = xb, yb  # move data to gpu if available
-    
-    pivot += batch_size * block_size
-    return xb, yb, pivot
+@torch.no_grad()  # prevent allocation of gradient nodes by telling torch we're never gonna call .backward()
+def estimate_loss(model, val_loader, device):
+    s0 = time.time()
+    model.eval()
+    print(f'estimate_loss cuda:{device} ...')
 
+    val_loss = []
+    for batch_no, (xb, yb) in enumerate(val_loader):
+        logits, iloss = model(xb, yb) # evaluate the loss
+        iloss = iloss.mean() # take average across the 8 GPUs
+        val_loss.append(iloss.item())
 
-class MyDataset(torch.utils.data.Dataset):
-    def __init__(self, train_data, block_size):
-        if len(train_data) % block_size == 0:
-            # if train_set doesn't have an extra token as target for the last sample, synthetically put in 
-            print(f'\n ===> MyDataset.__init__(): len(train_data) % block_size == 0\n')
-            train_data = torch.cat((train_data, torch.tensor([3], dtype=torch.long)))
-            
-        total_batches = len(train_data)//block_size
-        train_data2 = train_data[:total_batches * block_size]
-        train_data2 = train_data2.view(total_batches, block_size)
-        train_targets = train_data[1:total_batches*block_size+1]
-        train_targets2 = train_targets.view(total_batches, block_size)
+    print(f'cuda:{device}, len(val_loader):{len(val_loader)} {print_runtime(s0, printer= False)}')
+    model.train()
 
-        self.data = train_data2
-        self.targets = train_targets2
-        
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        return self.data[idx], self.targets[idx]
+    return sum(val_loss) / len(val_loss)
 
 
 def train(device, model, optimizer, num_chars, val_data, 
-          list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval, eval_steps, pend='\r'):
+          list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, eval_steps):
 
     start = time.time()
     step = 0
@@ -292,53 +265,59 @@ def train(device, model, optimizer, num_chars, val_data,
     num_tokens = 0
     num_batches = 0
 
+    myvalset = MyDataset(val_data, block_size)
+    val_loader = torch.utils.data.DataLoader(dataset=myvalset,
+                                             batch_size=batch_size,
+                                             shuffle=False,
+                                             sampler=DistributedSampler(myvalset))
+
+    list_losses_val.append(estimate_loss(model, val_loader, device))
+    list_num_tokens_val.append(num_tokens)
+    plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
+    generate_text(model, device, step, None) 
+
     while step < max_iters:
-        step += 1
 
         # crawl a new batch of wiki pages
-        train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add//100, printer=False)
+        train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
 
         # wrap the data in DataLoader class. 
-        mydataset = MyDataset(train_data, block_size)
-        train_loader = torch.utils.data.DataLoader(
-            dataset=mydataset,
-            batch_size=batch_size,
-            shuffle=False,
-            sampler=DistributedSampler(mydataset),
-        )
-        
+        mytrainset = MyDataset(train_data, block_size)
+        train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
+                                                   batch_size=batch_size,
+                                                   shuffle=False,
+                                                   sampler=DistributedSampler(mytrainset))
+
         for batch_no, (xb, yb) in enumerate(train_loader):
-            xb = xb
-            yb = yb
+            step += 1
             mb1 = xb.element_size() * xb.nelement() * 1e-6
             mb2 = yb.element_size() * yb.nelement() * 1e-6
             logits, loss = model(xb, yb) # evaluate the loss
             if (batch_no + 1) % 10 == 0 or (batch_no + 1) == 1:
-                print(f'batch_no:{batch_no+1} of {len(train_loader)},  loss:{loss.item():.2f}, Memory:{mb1+mb2}MB ', end=pend)
+                print(f'cuda:{device}, batch_no:{batch_no+1} of {len(train_loader)}, '+
+                      f'loss:{loss.item():.2f}, Memory:{mb1+mb2:.3f} MB ')
+
             loss = loss.mean() # take average across the 8 GPUs
             optimizer.zero_grad(set_to_none=True)
             loss.backward() # get the gradients with backprop.
             optimizer.step() # apply the gradient on the network parameters.
             list_losses.append(loss.item())
-            num_tokens += block_size * batch_size 
+            num_tokens += block_size * len(xb) 
             list_num_tokens.append(num_tokens)
 
             # evaluate at fixed intervals
-            if step % eval_steps == 0 and batch_no == (len(train_loader) - 1):
-                print(f'step:{step:3d}')
-                out = estimate_loss(model, val_data, val_data, device)
-                list_losses_eval['train'].append(out['train'])
-                list_losses_eval['val'].append(out['val'])
-                list_num_tokens_eval.append(num_tokens)
-                plotter(list_num_tokens, list_losses, list_num_tokens_eval, list_losses_eval, savefig=True)
+            if step % eval_steps == 0:
+                print(f'\nestimating loss... step:{step:3d} '+
+                      f'train_data.device:{train_data.device}, val_data.device:{val_data.device}')
+                list_losses_val.append(estimate_loss(model, val_loader, device))
+                list_num_tokens_val.append(num_tokens)
+                plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
+                generate_text(model, device, step, list_losses[-1]) 
 
-            if step % (eval_steps * 4) == 0:
-                generate_text(model, device) 
+        del train_loader, mytrainset, train_data
 
-        print(f'cuda:{device} step:{step:3d} num_pages:{len(visited_urls):02d}  '+
-              f'{"FINISHED " if step == max_iters else ""} train():{print_runtime(start, False)[1:-1]}', end='\n')
-
-
+        print(f'train(): cuda:{device}: step:{step}: num_pages {len(visited_urls):02d}: '+
+              f'{"FINISHED " if step == max_iters else ""} {print_runtime(start, False)}', end='\n')
         
         
         
@@ -360,13 +339,5 @@ def train(device, model, optimizer, num_chars, val_data,
         
         
         
-
-
-
-
-
-
-
-
-
-
+        
+        
