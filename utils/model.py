@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, enc
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode
 
 from utils.helpers import load_val_data, extract_single_url, get_links, shave, decompose_divs, plotter, clean_up, ptxt, crawl_wiki_data
 
@@ -123,7 +123,7 @@ class DecoderModel(nn.Module):
         # idx and targets are both (B,T) tensor of integers
         token_embeddings = self.token_embedding_table(idx)  # (B,T,C) = (batch, time, vocab_size) = (4, 8, 65)
         position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (T,C)
-        position_embeddings = 0
+        #position_embeddings = 0
         x = token_embeddings + position_embeddings # (B,T,C)
         x = self.blocks(x) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
@@ -172,7 +172,7 @@ class MyDataset(torch.utils.data.Dataset):
         if len(train_data) % block_size == 0:
             # if train_set doesn't have an extra token as target for the last sample, put a dot (.) artificially.
             print(f'\n ===> MyDataset.__init__(): len(train_data) % block_size == 0\n')
-            train_data = torch.cat((train_data, torch.tensor([enc.encode('.')], dtype=torch.long)))
+            train_data = torch.cat((train_data, torch.tensor([encode('.')], dtype=torch.long)))
 
         total_batches = len(train_data)//block_size
         train_data2 = train_data[:total_batches * block_size]
@@ -191,20 +191,23 @@ class MyDataset(torch.utils.data.Dataset):
 
 
 def generate_text(model, device, step, loss):
+    if device != 0:
+        return
     
     s0 = time.time()
 
     seed_text = 'Into the flood again'
-    seed_tokens = torch.as_tensor(enc.encode(seed_text), device=device, dtype=torch.long).view(1,-1)
+    seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
 
-    output = (f''.join(enc.decode(generate_tokens(model, device, idx=seed_tokens).tolist()))) 
+    output = (f''.join(decode(generate_tokens(model, device, idx=seed_tokens).tolist()))) 
     print(f'\n===>  Text Generation cuda:{device}, step:{step}, loss:{loss} {print_runtime(s0, False)}')
     print(output)
     print()
     print('---' *30)
 
 
-def generate_tokens(model, device, idx, max_new_tokens=200):
+@torch.no_grad()
+def generate_tokens(model, device, idx, temperature=1, max_new_tokens=200):
     # idx is (B, T) array of indices in the current context
 
     for _ in range(max_new_tokens):
@@ -213,7 +216,7 @@ def generate_tokens(model, device, idx, max_new_tokens=200):
         logits, _ = model(idx[:, -block_size:]) # logits.shape: (1, T, n_vocab) 
 
         # focus only on the last time step
-        logits = logits[:, -1, :] # becomes (B, C)
+        logits = logits[:, -1, :] * (1.0 - temperature) # becomes (B, C)
 
         # apply softmax to get probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
@@ -247,7 +250,7 @@ def estimate_loss(model, val_loader, device):
     val_loss = []
     for batch_no, (xb, yb) in enumerate(val_loader):
         logits, iloss = model(xb, yb) # evaluate the loss
-        iloss = iloss.mean() # take average across the 8 GPUs
+        iloss = iloss.mean() # take average across all available GPUs
         val_loss.append(iloss.item())
 
     print(f'cuda:{device}, len(val_loader):{len(val_loader)} {print_runtime(s0, printer= False)}')

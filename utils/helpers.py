@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, enc, plt, pylab
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode, plt, pylab
 
 
 def load_val_data(device, num_pages=20):
@@ -27,7 +27,7 @@ def load_val_data(device, num_pages=20):
     val_data = []
     for i, url in enumerate(val_urls[:num_pages]):
         text, html, _num_chars = extract_single_url(url, visited_urls, _num_chars)
-        val_data.append(torch.tensor(enc.encode(text), dtype=torch.long))
+        val_data.append(torch.tensor(encode(text), dtype=torch.long))
     
     val_data = torch.cat(val_data).to(device)
     print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
@@ -187,7 +187,8 @@ def ptxt(num_chars):
 def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
     """ :param add: number of characters to be crawled and added.
     """
-
+    
+    print(f'crawl_wiki_data: cuda:{device}, add={add/1e6:.2f} M chars ...')
     s0 = time.time()
 
     # initialize variables
@@ -208,7 +209,7 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
 
         text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
         new_links.extend(get_links(html, new_links, visited_urls))
-        data.append(torch.tensor(enc.encode(text), dtype=torch.long))
+        data.append(torch.tensor(encode(text), dtype=torch.long))
 
     """   todo: get_batch() needs to take as input a single wiki page and it should output number of batches mined.
                 For now, I'm concatenating all the wiki pages in a single torch.tensor data.

@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
 
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata 
 from collections import Counter
@@ -65,7 +65,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='simple distributed training job')
     args = parser.parse_args()
 
-    for file in glob.glob(os.path.join('figures/*.png')):
+    for file in glob.glob(os.path.join('figures/loss*.png')):
         os.remove(file)
 
     world_size = torch.cuda.device_count()

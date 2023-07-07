@@ -2,7 +2,7 @@
 d_model = 768
 n_heads = 12
 n_layer = 12
-learning_rate = 9e-5
+learning_rate = 3e-5
 batch_size = 64 # (B)
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
@@ -18,11 +18,7 @@ d_head = int(d_model / n_heads)
 
 assert d_model / n_heads % 1 == 0
 
-
 import os
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
-
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
 from collections import Counter
 from urllib.request import urlopen
@@ -55,6 +51,9 @@ enc = tiktoken.Encoding(encDict['name'],
                         special_tokens=encDict['special_tokens' ])
 
 vocab_size = enc.n_vocab
+encode = enc.encode
+decode = enc.decode
+
 
 
 def print_runtime(start, printer=True):
