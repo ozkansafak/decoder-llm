@@ -161,7 +161,7 @@ class DecoderModel(nn.Module):
 
         print(f'self.device:{self.device}')
         table = PrettyTable(['d_model', 'n_layer', 'n_heads', 'd_head', 'block_size', 'batch_size', 'learning_rate'])
-        table.add_row([d_model, n_layer, n_heads, d_head, block_size, batch_size, learning_rate])
+        table.add_row([d_model, n_layer, n_heads, d_head, block_size, f'{batch_size} per GPU', learning_rate])
         print(table)
 
         return num_params
@@ -259,7 +259,7 @@ def estimate_loss(model, val_loader, device):
     return sum(val_loss) / len(val_loss)
 
 
-def train(device, model, optimizer, num_chars, val_data, 
+def train(device, model, optimizer, num_chars, val_data,
           list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, eval_steps):
 
     start = time.time()

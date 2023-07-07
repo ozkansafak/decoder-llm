@@ -53,8 +53,9 @@ enc = tiktoken.Encoding(encDict['name'],
 vocab_size = enc.n_vocab
 encode = enc.encode
 decode = enc.decode
+world_size = torch.cuda.device_count()
 
-
+batch_size //= world_size
 
 def print_runtime(start, printer=True):
     end = time.time()
