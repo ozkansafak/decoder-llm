@@ -2,8 +2,8 @@
 d_model = 768
 n_heads = 12
 n_layer = 12
-learning_rate = 3e-5
-batch_size = 64 # (B)
+learning_rate = 1e-4
+batch_size = 64 # (B) # each GPU gets `batch_size/world_size` samples
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 max_iters = 10000
@@ -41,7 +41,8 @@ from torch.distributed import init_process_group, destroy_process_group
 
 
 # ------------------------------------------------
-vocab = set('\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~')
+str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
+vocab = set(str_vocab)
 
 encFunc = ENCODING_CONSTRUCTORS['gpt2']
 encDict = encFunc()
@@ -51,11 +52,25 @@ enc = tiktoken.Encoding(encDict['name'],
                         special_tokens=encDict['special_tokens' ])
 
 vocab_size = enc.n_vocab
+# vocab_size = len(vocab)
 encode = enc.encode
 decode = enc.decode
 world_size = torch.cuda.device_count()
-
+if batch_size % world_size > 0:
+    print(f'\n===>\nbatch_size % world_size = {batch_size % world_size}. '+
+          f'batch_size will be clipped to {world_size * (batch_size // world_size)}\n\n')
 batch_size //= world_size
+
+# A simple character based tokenizer.
+# stoi = {s:i for i,s in enumerate(str_vocab)}
+# itos = {i:s for i,s in enumerate(str_vocab)}
+# def encode(str_input):
+#     return [stoi[c] for c in str_input]
+
+# def decode(list_idx):
+#     return ''.join([itos[i] for i in list_idx])
+    
+
 
 def print_runtime(start, printer=True):
     end = time.time()
@@ -83,7 +98,6 @@ def count_parameters(model):
 
 
 new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
-print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
 
 pylab.rcParams.update({'legend.fontsize': 'small',
                        'font.size'      : 14,

@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode, world_size
 
 from utils.helpers import load_val_data, extract_single_url, get_links, shave, decompose_divs, plotter, clean_up, ptxt, crawl_wiki_data
 
@@ -116,8 +116,10 @@ class DecoderModel(nn.Module):
         self.ln_f = nn.LayerNorm(d_model) # final layer norm
         self.lm_head = nn.Linear(d_model, vocab_size)
         self.device = device
+        self.num_params = None
+        self.footprint = None
         self.print_hyperparams_to_stdout()
-        
+
     def forward(self, idx, targets=None):
         B, T = idx.shape
         # idx and targets are both (B,T) tensor of integers
@@ -149,20 +151,23 @@ class DecoderModel(nn.Module):
                 m, n = item.shape
                 num_params += m * n
 
-        print()
-        if num_params < 1e3:
-            print(f"num_params: {num_params}")
-        elif num_params < 1e6:
-            print(f"num_params: {int(num_params * 1e-3)}K")
-        elif num_params < 1e9:
-            print(f"num_params: {int(num_params * 1e-6)}M")
-        elif num_params < 1e12:
-            print(f"num_params: {int(num_params * 1e-9)}B")
+        if self.device == 0:
+            if num_params < 1e3:
+                print(f"num_params: {num_params}")
+            elif num_params < 1e6:
+                print(f"num_params: {int(num_params * 1e-3)} K")
+            elif num_params < 1e9:
+                print(f"num_params: {int(num_params * 1e-6)} M")
+            elif num_params < 1e12:
+                print(f"num_params: {int(num_params * 1e-9)} B")
 
-        print(f'self.device:{self.device}')
-        table = PrettyTable(['d_model', 'n_layer', 'n_heads', 'd_head', 'block_size', 'batch_size', 'learning_rate'])
-        table.add_row([d_model, n_layer, n_heads, d_head, block_size, f'{batch_size} per GPU', learning_rate])
-        print(table)
+            self.num_params = num_params
+            self.footprint = num_params * next(self.parameters()).element_size()
+            print(f'model.footprint:{self.footprint * 1e-6} MB')
+            table = PrettyTable(['d_model', 'n_layer', 'n_heads', 'd_head', 'block_size', 'batch_size', 'learning_rate'])
+            table.add_row([d_model, n_layer, n_heads, d_head, block_size, 
+                           f'{batch_size* world_size}\n{batch_size} per GPU', learning_rate])
+            print(table)
 
         return num_params
 
@@ -193,17 +198,14 @@ class MyDataset(torch.utils.data.Dataset):
 def generate_text(model, device, step, loss):
     if device != 0:
         return
-    
     s0 = time.time()
 
-    seed_text = 'Into the flood again'
+    seed_text = 'Into the flood again'    
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
-
-    output = (f''.join(decode(generate_tokens(model, device, idx=seed_tokens).tolist()))) 
-    print(f'\n===>  Text Generation cuda:{device}, step:{step}, loss:{loss} {print_runtime(s0, False)}')
+    out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
+    output = f''.join(decode(out_tokens))
+    print(f'===>  Text Generation step:{step}, loss:{loss} {print_runtime(s0, False)}')
     print(output)
-    print()
-    print('---' *30)
 
 
 @torch.no_grad()
@@ -216,7 +218,8 @@ def generate_tokens(model, device, idx, temperature=1, max_new_tokens=200):
         logits, _ = model(idx[:, -block_size:]) # logits.shape: (1, T, n_vocab) 
 
         # focus only on the last time step
-        logits = logits[:, -1, :] * (1.0 - temperature) # becomes (B, C)
+        logits = logits[:, -1, :] # becomes (B, C)
+        
 
         # apply softmax to get probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
@@ -245,21 +248,27 @@ def load_train_objs(vocab_size, device, learning_rate):
 def estimate_loss(model, val_loader, device):
     s0 = time.time()
     model.eval()
-    print(f'estimate_loss cuda:{device} ...')
 
     val_loss = []
     for batch_no, (xb, yb) in enumerate(val_loader):
-        logits, iloss = model(xb, yb) # evaluate the loss
+        xb, yb = xb.to(device), yb.to(device)
+        logits, iloss = model(xb, yb) # evaluate the loss, logits shape = (B*T/world_size, vocab_size)
         iloss = iloss.mean() # take average across all available GPUs
         val_loss.append(iloss.item())
-
-    print(f'cuda:{device}, len(val_loader):{len(val_loader)} {print_runtime(s0, printer= False)}')
+    
     model.train()
 
     return sum(val_loss) / len(val_loss)
 
 
-def train(device, model, optimizer, num_chars, val_data,
+def load_shakespeare(num_chars=0, filename='dataset/tiny_shakespeare.txt'):
+    with open(filename, 'r', encoding='utf-8') as f:
+        train_data = f.read()
+
+    return train_data, num_chars + len(train_data) * 0.9
+
+
+def train(device, model, optimizer, num_chars, val_data, world_size,
           list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, eval_steps):
 
     start = time.time()
@@ -268,61 +277,75 @@ def train(device, model, optimizer, num_chars, val_data,
     num_tokens = 0
     num_batches = 0
 
+    val_data, _ = load_shakespeare()
+    train_data = val_data[:int(len(val_data) * 0.9)]
+    val_data = val_data[int(len(val_data) * 0.9):]
+
+    val_data = torch.tensor(encode(val_data))
     myvalset = MyDataset(val_data, block_size)
     val_loader = torch.utils.data.DataLoader(dataset=myvalset,
                                              batch_size=batch_size,
                                              shuffle=False,
                                              sampler=DistributedSampler(myvalset))
 
+    train_data = torch.tensor(encode(train_data)).to(device)
+    mytrainset = MyDataset(train_data, block_size)
+    train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
+                                               batch_size=batch_size,
+                                               shuffle=False,
+                                               sampler=DistributedSampler(mytrainset))
+
     list_losses_val.append(estimate_loss(model, val_loader, device))
     list_num_tokens_val.append(num_tokens)
     plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
-    generate_text(model, device, step, None) 
+    generate_text(model, device, step, None)
 
+    s0 = time.time()
     while step < max_iters:
-
         # crawl a new batch of wiki pages
-        train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
-
-        # wrap the data in DataLoader class. 
-        mytrainset = MyDataset(train_data, block_size)
-        train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
-                                                   batch_size=batch_size,
-                                                   shuffle=False,
-                                                   sampler=DistributedSampler(mytrainset))
+        # train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
 
         for batch_no, (xb, yb) in enumerate(train_loader):
             step += 1
-            mb1 = xb.element_size() * xb.nelement() * 1e-6
-            mb2 = yb.element_size() * yb.nelement() * 1e-6
+            # xb, yb is per GPU. Each GPU gets a different (xb,yb) but they're of same size.
+            xb, yb = xb.to(device), yb.to(device)
+            mb1 = xb.element_size() * batch_size * block_size * (block_size + 1) / 2 * 1e-6
+            mb2 = yb.element_size() * batch_size * block_size * (block_size + 1) / 2 * 1e-6
             logits, loss = model(xb, yb) # evaluate the loss
-            if (batch_no + 1) % 10 == 0 or (batch_no + 1) == 1:
-                print(f'cuda:{device}, batch_no:{batch_no+1} of {len(train_loader)}, '+
-                      f'loss:{loss.item():.2f}, Memory:{mb1+mb2:.3f} MB ')
+            if device == 0 and ((batch_no + 1) % 10 == 0 or (batch_no + 1) == 1):
+                print(f'batch_no:{batch_no+1:3d} of {len(train_loader)}, '+
+                      f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB + '+
+                      f'{model.module.footprint*1e-6:.2f} MB')
 
             loss = loss.mean() # take average across the 8 GPUs
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=False)
             loss.backward() # get the gradients with backprop.
             optimizer.step() # apply the gradient on the network parameters.
+            torch.distributed.all_reduce(loss)
+            loss /= world_size
             list_losses.append(loss.item())
-            num_tokens += block_size * len(xb) 
+
+            # total number of tokens ingested by all GPUs
+            num_tokens += block_size * len(xb) * world_size
             list_num_tokens.append(num_tokens)
 
             # evaluate at fixed intervals
-            if step % eval_steps == 0:
-                print(f'\nestimating loss... step:{step:3d} '+
-                      f'train_data.device:{train_data.device}, val_data.device:{val_data.device}')
+            if device == 0 and step % eval_steps == 0:
+                print('\n' + '---' *30)
+                print(f'estimating loss... step:{step:3d} '+
+                      f'train_data.device:{train_data.device}, val_data.device:{val_data.device} {print_runtime(s0, False)}')
                 list_losses_val.append(estimate_loss(model, val_loader, device))
+                s0 = time.time()
                 list_num_tokens_val.append(num_tokens)
                 plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
-                generate_text(model, device, step, list_losses[-1]) 
+                generate_text(model, device, step, list_losses[-1])
+                print('---' *30 + '\n')
 
-        del train_loader, mytrainset, train_data
+        # del train_loader, mytrainset, train_data
 
-        print(f'train(): cuda:{device}: step:{step}: num_pages {len(visited_urls):02d}: '+
-              f'{"FINISHED " if step == max_iters else ""} {print_runtime(start, False)}', end='\n')
-        
-        
+        if device ==0:
+            print(f'\ntrain() epoch finished. step:{step}: num_pages {len(visited_urls):02d}: '+
+                  f'{"FINISHED " if step == max_iters else ""} {print_runtime(start, False)}', end='\n')
         
         
         
