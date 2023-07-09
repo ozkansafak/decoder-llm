@@ -30,7 +30,9 @@ def load_val_data(device, num_pages=20):
         val_data.append(torch.tensor(encode(text), dtype=torch.long))
     
     val_data = torch.cat(val_data)
-    print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
+    if device == 0 :
+        print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
+        
     return val_data, val_urls[:num_pages]
 
 
@@ -130,7 +132,6 @@ def plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_loss
     if device != 0:
         return
     
-    print(f'plotter len(list_num_tokens):{len(list_num_tokens)}')
     step = len(list_losses)
     list_num_tokens = np.array(list_num_tokens) / 1e3
     list_num_tokens_val = np.array(list_num_tokens_val) / 1e3
@@ -188,9 +189,10 @@ def ptxt(num_chars):
 def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
     """ :param add: number of characters to be crawled and added.
     """
-    
-    print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f} M chars ...')
+
     s0 = time.time()
+    if device==0:
+        print(f'crawl_wiki_data: add={add/1e6:.2f} M chars ...')
 
     # initialize variables
     num_chars_init = num_chars
@@ -227,9 +229,10 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
 #     with open (f'text_output/cuda:{device}_{num_chars_init}_visited_urls.txt', 'w') as f:
 #         json.dump(all_visited_urls, f)
 
-    print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f}M chars, len(visited_urls):{len(visited_urls)}, '+
-          f'number of new pages crawled: {len(new_links) - n0} '+
-          f'{print_runtime(s0, False)}\n')
+    if device==0:
+        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f}M chars, len(visited_urls):{len(visited_urls)}, '+
+              f'number of new pages crawled: {len(new_links) - n0} '+
+              f'{print_runtime(s0, False)}\n')
 
     return data, num_chars
 

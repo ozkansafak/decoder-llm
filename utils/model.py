@@ -159,14 +159,14 @@ class DecoderModel(nn.Module):
             elif num_params < 1e9:
                 print(f"num_params: {int(num_params * 1e-6)} M")
             elif num_params < 1e12:
-                print(f"num_params: {int(num_params * 1e-9)} B")
+                print(f"num_params: {(num_params * 1e-9):.3f} B")
 
             self.num_params = num_params
             self.footprint = num_params * next(self.parameters()).element_size()
-            print(f'model.footprint:{self.footprint * 1e-6} MB')
+            print(f'model.footprint: {self.footprint * 1e-6:.2f} MB')
             table = PrettyTable(['d_model', 'n_layer', 'n_heads', 'd_head', 'block_size', 'batch_size', 'learning_rate'])
             table.add_row([d_model, n_layer, n_heads, d_head, block_size, 
-                           f'{batch_size* world_size}\n{batch_size} per GPU', learning_rate])
+                           f'{batch_size* world_size}\n({batch_size} per GPU)', learning_rate])
             print(table)
 
         return num_params
@@ -196,7 +196,7 @@ class MyDataset(torch.utils.data.Dataset):
 
 
 def generate_text(model, device, step, loss):
-    if device != 0:
+    if device !=0:
         return
     s0 = time.time()
 
@@ -204,12 +204,13 @@ def generate_text(model, device, step, loss):
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
-    print(f'===>  Text Generation step:{step}, loss:{loss} {print_runtime(s0, False)}')
+    print(f'===>  Text Generation step:{step}, loss:{loss:.2f} {print_runtime(s0, False)}')
     print(output)
+    print('---' *30 + '\n')
 
 
 @torch.no_grad()
-def generate_tokens(model, device, idx, temperature=1, max_new_tokens=200):
+def generate_tokens(model, device, idx, temperature=0.5, max_new_tokens=200):
     # idx is (B, T) array of indices in the current context
 
     for _ in range(max_new_tokens):
@@ -220,12 +221,16 @@ def generate_tokens(model, device, idx, temperature=1, max_new_tokens=200):
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
         
-
         # apply softmax to get probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
         
         # sample from the distribution
-        idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+        if temperature == 0:
+            idx_next = torch.argmax(probs)
+            idx_next = torch.tensor([[idx_next]], device=device)
+            
+        else:
+            idx_next = torch.multinomial(probs / temperature, num_samples=1) # (B, 1)
 
         # append sampled index to the running sequence
         idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
@@ -277,33 +282,30 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
     num_tokens = 0
     num_batches = 0
 
-    val_data, _ = load_shakespeare()
-    train_data = val_data[:int(len(val_data) * 0.9)]
-    val_data = val_data[int(len(val_data) * 0.9):]
+#     val_data, _ = load_shakespeare()
+#     train_data = val_data[:int(len(val_data) * 0.9)]
+#     val_data = val_data[int(len(val_data) * 0.9):]
+#     val_data = torch.tensor(encode(val_data))
 
-    val_data = torch.tensor(encode(val_data))
     myvalset = MyDataset(val_data, block_size)
     val_loader = torch.utils.data.DataLoader(dataset=myvalset,
                                              batch_size=batch_size,
                                              shuffle=False,
                                              sampler=DistributedSampler(myvalset))
 
-    train_data = torch.tensor(encode(train_data)).to(device)
-    mytrainset = MyDataset(train_data, block_size)
-    train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
-                                               batch_size=batch_size,
-                                               shuffle=False,
-                                               sampler=DistributedSampler(mytrainset))
-
     list_losses_val.append(estimate_loss(model, val_loader, device))
     list_num_tokens_val.append(num_tokens)
     plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
-    generate_text(model, device, step, None)
 
     s0 = time.time()
     while step < max_iters:
         # crawl a new batch of wiki pages
-        # train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
+        train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
+        mytrainset = MyDataset(train_data, block_size)
+        train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
+                                                   batch_size=batch_size,
+                                                   shuffle=False,
+                                                   sampler=DistributedSampler(mytrainset))
 
         for batch_no, (xb, yb) in enumerate(train_loader):
             step += 1
@@ -334,14 +336,14 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
                 print('\n' + '---' *30)
                 print(f'estimating loss... step:{step:3d} '+
                       f'train_data.device:{train_data.device}, val_data.device:{val_data.device} {print_runtime(s0, False)}')
-                list_losses_val.append(estimate_loss(model, val_loader, device))
                 s0 = time.time()
+                list_losses_val.append(estimate_loss(model, val_loader, device))
                 list_num_tokens_val.append(num_tokens)
                 plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
-                generate_text(model, device, step, list_losses[-1])
-                print('---' *30 + '\n')
+                if step % (eval_steps*4) == 0:
+                    generate_text(model, device, step, list_losses[-1])
 
-        # del train_loader, mytrainset, train_data
+        del train_loader, mytrainset, train_data
 
         if device ==0:
             print(f'\ntrain() epoch finished. step:{step}: num_pages {len(visited_urls):02d}: '+

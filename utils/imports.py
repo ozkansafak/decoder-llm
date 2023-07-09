@@ -1,9 +1,9 @@
 # Hyperparameters for transformer model
-d_model = 768
-n_heads = 12
-n_layer = 12
-learning_rate = 1e-4
-batch_size = 64 # (B) # each GPU gets `batch_size/world_size` samples
+d_model = 1728
+n_heads = 18
+n_layer = 24
+learning_rate = 2e-4
+batch_size = 70 # (B) # each GPU gets `batch_size/world_size` samples
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 max_iters = 10000
@@ -57,8 +57,8 @@ encode = enc.encode
 decode = enc.decode
 world_size = torch.cuda.device_count()
 if batch_size % world_size > 0:
-    print(f'\n===>\nbatch_size % world_size = {batch_size % world_size}. '+
-          f'batch_size will be clipped to {world_size * (batch_size // world_size)}\n\n')
+    print(f'===>batch_size % world_size = {batch_size % world_size}. '+
+          f'batch_size will be clipped to {world_size * (batch_size // world_size)}')
 batch_size //= world_size
 
 # A simple character based tokenizer.
