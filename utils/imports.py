@@ -6,8 +6,7 @@ learning_rate = 2e-4
 batch_size = 70 # (B) # each GPU gets `batch_size/world_size` samples
 block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-max_iters = 10000
-eval_steps = 30
+max_steps = 10000
 
 # --------------------------------------
 
@@ -100,11 +99,11 @@ def count_parameters(model):
 new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
 
 pylab.rcParams.update({'legend.fontsize': 'small',
-                       'font.size'      : 14,
+                       'font.size'      : 12,
                        'figure.figsize' : (9, 3.5),
-                       'axes.labelsize' : 'medium',
-                       'axes.titlesize' : 'medium',
+                       'axes.labelsize' : 'small',
+                       'axes.titlesize' : 'small',
                        'axes.grid'      : 'on',
-                       'xtick.labelsize': 'medium',
-                       'ytick.labelsize': 'medium'})
+                       'xtick.labelsize': 'small',
+                       'ytick.labelsize': 'small'})
 

@@ -8,3 +8,4 @@
 *.log
 transformer_tutorial/**
 **/text_output/**
+**/models/*

@@ -35,7 +35,7 @@ def ddp_setup(device: int, world_size: int):
 def main(device, world_size):
     ddp_setup(device, world_size)
 
-    from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add 
+    from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add 
 
     from utils.helpers import load_val_data, extract_single_url, get_links, shave, decompose_divs, plotter, clean_up, ptxt, crawl_wiki_data
 
@@ -51,11 +51,11 @@ def main(device, world_size):
     # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
     val_data = None
     val_data, val_urls = load_val_data(device, num_pages=30)
-    list_num_tokens, list_num_tokens_val, list_losses, list_losses_val = [], [], [], []
+    list_num_tokens, list_num_tokens_val, list_losses, list_losses_val, list_lr, list_mins = [], [], [], [], [], []
 
     # train loop
     train(device, model, optimizer, num_chars, val_data, world_size, 
-          list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, eval_steps)
+          list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, list_lr, list_mins)
 
     destroy_process_group()
 

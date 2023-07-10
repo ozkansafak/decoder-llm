@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode, world_size
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add, encode, decode, world_size
 
 from utils.helpers import load_val_data, extract_single_url, get_links, shave, decompose_divs, plotter, clean_up, ptxt, crawl_wiki_data
 
@@ -177,7 +177,7 @@ class MyDataset(torch.utils.data.Dataset):
         if len(train_data) % block_size == 0:
             # if train_set doesn't have an extra token as target for the last sample, put a dot (.) artificially.
             print(f'\n ===> MyDataset.__init__(): len(train_data) % block_size == 0\n')
-            train_data = torch.cat((train_data, torch.tensor([encode('.')], dtype=torch.long)))
+            train_data = torch.cat(( train_data, torch.tensor(encode('.'), dtype=torch.long) ))
 
         total_batches = len(train_data)//block_size
         train_data2 = train_data[:total_batches * block_size]
@@ -204,7 +204,7 @@ def generate_text(model, device, step, loss):
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
-    print(f'===>  Text Generation step:{step}, loss:{loss:.2f} {print_runtime(s0, False)}')
+    print(f'\n===>  Text Generation step:{step}, loss:{loss:.2f} {print_runtime(s0, False)}')
     print(output)
     print('---' *30 + '\n')
 
@@ -220,15 +220,14 @@ def generate_tokens(model, device, idx, temperature=0.5, max_new_tokens=200):
 
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
-        
+
         # apply softmax to get probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
-        
+
         # sample from the distribution
         if temperature == 0:
             idx_next = torch.argmax(probs)
             idx_next = torch.tensor([[idx_next]], device=device)
-            
         else:
             idx_next = torch.multinomial(probs / temperature, num_samples=1) # (B, 1)
 
@@ -238,13 +237,38 @@ def generate_tokens(model, device, idx, temperature=0.5, max_new_tokens=200):
     return idx[0]
 
 
-def load_train_objs(vocab_size, device, learning_rate):
+class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
+    # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
+    """ Linear warmup and then cosine decay.
+        Linearly increases learning rate from 0 to 1 over `x0` training steps.
+        Decreases learning rate from 1. to 0. over remaining `t_total - x0` steps following a cosine curve.
+        If `cycles` (default=0.5) is different from default, learning rate follows cosine function after warmup.
+    """
 
+    def __init__(self, optimizer, x0, t_total, cycles=.5, last_epoch=-1):
+        self.x0 = x0
+        self.t_total = t_total
+        self.cycles = cycles
+        super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
+
+    def lr_lambda(self, x):
+        # .step() invokes this function through LambdaLR
+        if x < self.x0:
+            # linear warm up stage
+            return .9 * x / max(1, self.x0) + 0.1 
+        else:
+            # cosine annealing stage
+            half_period = (x - self.x0) / ((self.t_total - self.x0) * 2)
+            return max(0.1, 0.5 * (1. + np.cos(np.pi * float(self.cycles) * half_period))) 
+
+
+def load_train_objs(vocab_size, device, learning_rate):
     # instantiate model
     model = DecoderModel(vocab_size, device)
- 
+
     # Create a pytorch optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  # usually 3e-4 for bigger networks.
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  
+    optimizer = torch.optim.Adam(model.parameters(), betas=(0.9, 0.95), weight_decay=0.1, lr=learning_rate)  
 
     return model, optimizer
 
@@ -273,14 +297,35 @@ def load_shakespeare(num_chars=0, filename='dataset/tiny_shakespeare.txt'):
     return train_data, num_chars + len(train_data) * 0.9
 
 
+def save_model(model, device, step, dname='models'):
+#     pst = pytz.timezone('US/Pacific')
+#     delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=20) + datetime.timedelta(seconds=42)
+#     dt = datetime.datetime.now(pst) + delta
+#     prefix = dt.isoformat().split('.')[0]
+#     prefix = prefix.replace('T', ' | ')
+    PATH = f'{dname}/chkpt_{step:04d}.pt'
+    s0 = time.time() 
+    
+    if device == 0:
+        torch.save(model.state_dict(), PATH)
+    
+    print(f'Saved model "{PATH}"  {print_runtime(s0, False)}')
+
+
+def load_model(model, PATH):
+    model.load_state_dict(torch.load(PATH))
+    model.eval()
+
+
 def train(device, model, optimizer, num_chars, val_data, world_size,
-          list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, eval_steps):
+          list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, list_lr, list_mins):
 
     start = time.time()
     step = 0
     sample_no = 0
     num_tokens = 0
     num_batches = 0
+    lr_scheduler = WarmupCosineAnnealing(optimizer, x0=5e6, t_total=20e6)
 
 #     val_data, _ = load_shakespeare()
 #     train_data = val_data[:int(len(val_data) * 0.9)]
@@ -295,10 +340,9 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
 
     list_losses_val.append(estimate_loss(model, val_loader, device))
     list_num_tokens_val.append(num_tokens)
-    plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
+    plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_mins)
 
-    s0 = time.time()
-    while step < max_iters:
+    while step < max_steps:
         # crawl a new batch of wiki pages
         train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
         mytrainset = MyDataset(train_data, block_size)
@@ -307,6 +351,7 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
                                                    shuffle=False,
                                                    sampler=DistributedSampler(mytrainset))
 
+        s0 = time.time()
         for batch_no, (xb, yb) in enumerate(train_loader):
             step += 1
             # xb, yb is per GPU. Each GPU gets a different (xb,yb) but they're of same size.
@@ -314,40 +359,55 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             mb1 = xb.element_size() * batch_size * block_size * (block_size + 1) / 2 * 1e-6
             mb2 = yb.element_size() * batch_size * block_size * (block_size + 1) / 2 * 1e-6
             logits, loss = model(xb, yb) # evaluate the loss
-            if device == 0 and ((batch_no + 1) % 10 == 0 or (batch_no + 1) == 1):
-                print(f'batch_no:{batch_no+1:3d} of {len(train_loader)}, '+
-                      f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB + '+
-                      f'{model.module.footprint*1e-6:.2f} MB')
 
             loss = loss.mean() # take average across the 8 GPUs
             optimizer.zero_grad(set_to_none=False)
             loss.backward() # get the gradients with backprop.
+            
+            # clip gradients at 1.0
+            clip_value = 1.0
+            for param in model.parameters():
+                param.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))            
+            
             optimizer.step() # apply the gradient on the network parameters.
+            lr_scheduler.step(num_tokens)
+
+            list_lr.append(optimizer.param_groups[-1]['lr'])
             torch.distributed.all_reduce(loss)
             loss /= world_size
             list_losses.append(loss.item())
-
             # total number of tokens ingested by all GPUs
             num_tokens += block_size * len(xb) * world_size
             list_num_tokens.append(num_tokens)
+            list_mins.append((time.time() - s0)//60)
 
-            # evaluate at fixed intervals
-            if device == 0 and step % eval_steps == 0:
-                print('\n' + '---' *30)
-                print(f'estimating loss... step:{step:3d} '+
-                      f'train_data.device:{train_data.device}, val_data.device:{val_data.device} {print_runtime(s0, False)}')
-                s0 = time.time()
-                list_losses_val.append(estimate_loss(model, val_loader, device))
-                list_num_tokens_val.append(num_tokens)
-                plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=True)
-                if step % (eval_steps*4) == 0:
+            
+            if device == 0: 
+                # print batch_no to stdout
+                if ((batch_no + 1) % 10 == 0 or (batch_no + 1) == 1):
+                    print(f'batch_no:{batch_no+1:3d} of {len(train_loader)}, '+
+                          f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB ')
+                
+                # evaluate at fixed intervals
+                if step % 30 == 0:
+                    print('\n' + '---' *30 + '\n')
+                    print(f'estimating loss... step:{step:3d} {print_runtime(s0, False)}')
+                    s0 = time.time()
+                    list_losses_val.append(estimate_loss(model, val_loader, device))
+                    list_num_tokens_val.append(num_tokens)
+                    plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_mins)
+                    
+                if step % (120) == 0:
                     generate_text(model, device, step, list_losses[-1])
+                
+                if (step % 100 == 0):
+                    save_model(model, device, step)
 
         del train_loader, mytrainset, train_data
 
-        if device ==0:
-            print(f'\ntrain() epoch finished. step:{step}: num_pages {len(visited_urls):02d}: '+
-                  f'{"FINISHED " if step == max_iters else ""} {print_runtime(start, False)}', end='\n')
+        if device == 0:
+            print(f'\ntrain() epoch finished. step:{step}: {add*1e-6:.2f} M chars. num_pages {len(visited_urls):02d}: '+
+                  f'{"FINISHED " if step == max_steps else ""} {print_runtime(start, False)}', end='\n\n')
         
         
         

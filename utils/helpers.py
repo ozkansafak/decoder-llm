@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_iters, eval_steps, num_chars, add, encode, decode, plt, pylab
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add, encode, decode, plt, pylab
 
 
 def load_val_data(device, num_pages=20):
@@ -128,34 +128,48 @@ def decompose_divs(soup, list_class_names, name=''):
         item.decompose()
 
 
-def plotter(device, list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, savefig=False):
+def plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_mins, savefig=True):
     if device != 0:
         return
     
     step = len(list_losses)
-    list_num_tokens = np.array(list_num_tokens) / 1e3
-    list_num_tokens_val = np.array(list_num_tokens_val) / 1e3
+    list_num_tokens = np.array(list_num_tokens) / 1e6
+    list_num_tokens_val = np.array(list_num_tokens_val) / 1e6
+    list_mins = np.array(list_mins)  # change to mins
     
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(3.5 * 1.618, 3.5)) 
-    ax.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
-    ax.plot(list_num_tokens_val, list_losses_val, 'r.-', alpha=.4, label='val')
-    ax.legend()
-    ax.set_title(f'Cross-Entropy Loss (device={device}, step={step})')
-    ax.set_xlabel('thousand samples')
-    ax.set_xlim(0)
-    ax.set_ylim(0)
-    yticks = ax.get_yticks()
-    ax.set_yticks(range(0, int(max(yticks))))
+    fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(3.5 * 1.618, 10.5)) 
+    ax1, ax2, ax3 = axs
+    ax1.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
+    ax1.plot(list_num_tokens_val, list_losses_val, 'r.-', alpha=.6, label='val')
+    ax1.legend()
+    ax1.set_title(f'Cross-Entropy Loss (step={step})')
+    ax1.set_xlim(0)
+    ax1.set_ylim(0)
+    yticks = ax1.get_yticks()
+    ax1.set_yticks(range(0, int(max(yticks))))
+    
+    ax2.set_title('learning_rate')
+    ax2.plot(list_num_tokens, list_lr, 'k.', alpha=.5, label='learning_rate')
+    ax1.set_xlim(0)
+    ax2.set_ylim(0)
+
+    ax3.set_title('Wall time')
+    ax3.plot(list_num_tokens, list_mins, 'k.', alpha=.5, label='Wall time (mins)')
+    ax1.set_xlim(0)
+    ax3.set_ylim(0)
+    ax3.set_xlabel('Million tokens')
+
     if savefig:
         pst = pytz.timezone('US/Pacific')
         delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=20) + datetime.timedelta(seconds=42)
         dt = datetime.datetime.now(pst) + delta
         prefix = dt.isoformat().split('.')[0]
         prefix = prefix.replace('T', ' | ')
-        print(f'Saving figures/loss_{prefix}.png')
+        print(f'Saving "figures/loss_{prefix}.png"')
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
     else:
         plt.show()
+        
     plt.close()
 
 
@@ -230,7 +244,8 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
 #         json.dump(all_visited_urls, f)
 
     if device==0:
-        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f}M chars, len(visited_urls):{len(visited_urls)}, '+
+        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f}M chars {len(data)*1e-6:.2f}M tokens '+
+              f'len(visited_urls):{len(visited_urls)}, '+
               f'number of new pages crawled: {len(new_links) - n0} '+
               f'{print_runtime(s0, False)}\n')
 
