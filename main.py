@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata 
 from collections import Counter
@@ -51,7 +51,7 @@ def main(device, world_size):
     # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
     val_data = None
     val_data, val_urls = load_val_data(device, num_pages=30)
-    list_num_tokens, list_num_tokens_val, list_losses, list_losses_val, list_lr, list_mins = [], [], [], [], [], []
+    list_num_tokens, list_num_tokens_val, list_losses, list_losses_val, list_lr, list_mins = [], [], [], [], [], [[], []]
 
     # train loop
     train(device, model, optimizer, num_chars, val_data, world_size, 

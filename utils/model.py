@@ -106,6 +106,25 @@ class Block(nn.Module):
         return x
 
 
+class PositionalEncoding(nn.Module):  #@save
+    """https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html"""
+    def __init__(self, num_hiddens, dropout, max_len=1000):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        
+        # Create a long enough P
+        self.P = torch.zeros((1, max_len, num_hiddens))
+        X = torch.arange(max_len, dtype=torch.float32).reshape(
+            -1, 1) / torch.pow(10000, torch.arange(
+            0, num_hiddens, 2, dtype=torch.float32) / num_hiddens)
+        self.P[:, :, 0::2] = torch.sin(X)
+        self.P[:, :, 1::2] = torch.cos(X)
+
+    def forward(self, X):
+        X = X + self.P[:, :X.shape[1], :].to(X.device)
+        return self.dropout(X)
+
+
 class DecoderModel(nn.Module):
     def __init__(self, vocab_size, device):
         super().__init__()
@@ -237,29 +256,81 @@ def generate_tokens(model, device, idx, temperature=0.5, max_new_tokens=200):
     return idx[0]
 
 
-class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
+class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
     # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
-    """ Linear warmup and then cosine decay.
-        Linearly increases learning rate from 0 to 1 over `x0` training steps.
-        Decreases learning rate from 1. to 0. over remaining `t_total - x0` steps following a cosine curve.
-        If `cycles` (default=0.5) is different from default, learning rate follows cosine function after warmup.
+    """ Linearly increases learning rate from 0.1 to 1 over `x0` training steps.
+        Decreases learning rate from 1. to 0.1 over the next `x1 - x0` steps following a b/(x+a) hyperbolic curve.
+        Stays constant at 0.1 after x1 steps.
     """
 
-    def __init__(self, optimizer, x0, t_total, cycles=.5, last_epoch=-1):
+    def __init__(self, optimizer, x0, x1, last_epoch=-1):
         self.x0 = x0
-        self.t_total = t_total
-        self.cycles = cycles
+        self.x1 = x1
+        super(WarmupHyperbolicDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
+
+    def lr_lambda(self, x):
+        # .step() invokes this function through LambdaLR
+        if x < self.x0:
+            # linear warm up stage
+            y = .9 * x / max(1, self.x0) + 0.1 
+        elif self.x0 <= x < self.x1:
+            # hyperbolic decay stage
+            b = 9 / (self.x1 - self.x0)
+            a = (self.x0 * (1 - b)) / b 
+            y = 1 / (b * (x + a) - self.x0 + 1) 
+        elif self.x1 <= x:
+            # constant 10% of max learning_rate
+            y = .1
+
+        return y
+
+
+def get_batch_size(batch_size, device, step, x, x0):
+    """ linearly warms up batch size  (0,0.1) to (x0,1)
+        Call it like this. 
+        dynamic_batch_size = get_batch_size(batch_size, device, step, num_tokens, x1//20)
+    """
+
+    if x < x0:
+        c = 0.10
+        m = (1 - c) / x0 
+        y = m * x + c
+    else:
+        y = 1
+
+    if device == 0:
+        print(f'get_batch_size:{device} step =', step, '  x =', x, '  x0 =', x0,  '  y=', y)
+
+    return int(y * batch_size)
+
+
+class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
+    # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
+    """ Linearly increases learning rate from 0.1 to 1 over `x0` training steps.
+        Decreases learning rate from 1. to 0.1 over the next `x1 - x0` steps following a b/(x+a) hyperbolic curve.
+        Stays constant at 0.1 after x1 steps.
+    """
+
+    def __init__(self, optimizer, x0, x1, last_epoch=-1):
+        self.x0 = x0
+        self.x1 = x1
         super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
         # .step() invokes this function through LambdaLR
         if x < self.x0:
             # linear warm up stage
-            return .9 * x / max(1, self.x0) + 0.1 
-        else:
+            y = .9 * x / max(1, self.x0) + 0.1 
+        elif self.x0 <= x < self.x1:
             # cosine annealing stage
-            half_period = (x - self.x0) / ((self.t_total - self.x0) * 2)
-            return max(0.1, 0.5 * (1. + np.cos(np.pi * float(self.cycles) * half_period))) 
+            T = (self.x1 - self.x0) * 2
+            A = .5 * .9
+            y = A * np.cos(2 * np.pi * (x - self.x0) / T) + 0.55    
+        elif self.x1 <= x:
+            # constant 10% learning_rate
+            y = .1
+
+        return y
 
 
 def load_train_objs(vocab_size, device, learning_rate):
@@ -325,12 +396,15 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
     sample_no = 0
     num_tokens = 0
     num_batches = 0
-    lr_scheduler = WarmupCosineAnnealing(optimizer, x0=5e6, t_total=20e6)
+    x0 = .375e6 / 100 # num_tokens at end of Linear warm up
+    x1 = 260e6  / 100 # num_tokens at end of Cosine Annealing or Hyperbolic Decay
+    lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
 
 #     val_data, _ = load_shakespeare()
 #     train_data = val_data[:int(len(val_data) * 0.9)]
 #     val_data = val_data[int(len(val_data) * 0.9):]
 #     val_data = torch.tensor(encode(val_data))
+#     train_data = torch.tensor(encode(train_data))
 
     myvalset = MyDataset(val_data, block_size)
     val_loader = torch.utils.data.DataLoader(dataset=myvalset,
@@ -338,8 +412,10 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
                                              shuffle=False,
                                              sampler=DistributedSampler(myvalset))
 
+    # compute losses on the randomly initialized model
     list_losses_val.append(estimate_loss(model, val_loader, device))
-    list_num_tokens_val.append(num_tokens)
+    list_num_tokens_val.append(0)
+    list_mins[0].append(None)
     plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_mins)
 
     while step < max_steps:
@@ -347,14 +423,16 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
         train_data, num_chars = crawl_wiki_data(device, new_links, visited_urls, num_chars, add)
         mytrainset = MyDataset(train_data, block_size)
         train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
-                                                   batch_size=batch_size,
+                                                   batch_size=max(2, batch_size),
                                                    shuffle=False,
                                                    sampler=DistributedSampler(mytrainset))
 
         s0 = time.time()
         for batch_no, (xb, yb) in enumerate(train_loader):
+            s1 = time.time()
             step += 1
-            # xb, yb is per GPU. Each GPU gets a different (xb,yb) but they're of same size.
+
+            # xb, yb is per GPU.
             xb, yb = xb.to(device), yb.to(device)
             mb1 = xb.element_size() * batch_size * block_size * (block_size + 1) / 2 * 1e-6
             mb2 = yb.element_size() * batch_size * block_size * (block_size + 1) / 2 * 1e-6
@@ -363,15 +441,14 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             loss = loss.mean() # take average across the 8 GPUs
             optimizer.zero_grad(set_to_none=False)
             loss.backward() # get the gradients with backprop.
-            
+
             # clip gradients at 1.0
             clip_value = 1.0
             for param in model.parameters():
                 param.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))            
-            
+
             optimizer.step() # apply the gradient on the network parameters.
             lr_scheduler.step(num_tokens)
-
             list_lr.append(optimizer.param_groups[-1]['lr'])
             torch.distributed.all_reduce(loss)
             loss /= world_size
@@ -379,35 +456,35 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             # total number of tokens ingested by all GPUs
             num_tokens += block_size * len(xb) * world_size
             list_num_tokens.append(num_tokens)
-            list_mins.append((time.time() - s0)//60)
+            list_mins[1].append((time.time() - s1))
 
-            
             if device == 0: 
                 # print batch_no to stdout
                 if ((batch_no + 1) % 10 == 0 or (batch_no + 1) == 1):
                     print(f'batch_no:{batch_no+1:3d} of {len(train_loader)}, '+
                           f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB ')
-                
+
                 # evaluate at fixed intervals
                 if step % 30 == 0:
                     print('\n' + '---' *30 + '\n')
-                    print(f'estimating loss... step:{step:3d} {print_runtime(s0, False)}')
-                    s0 = time.time()
+                    print(f'estimating loss... step:{step:3d} time elapsed since last estimate_loss:{print_runtime(s0, False)}')
                     list_losses_val.append(estimate_loss(model, val_loader, device))
                     list_num_tokens_val.append(num_tokens)
+                    list_mins[0].append((time.time() - s0)/60)
+                    s0 = time.time()
                     plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_mins)
-                    
-                if step % (120) == 0:
+
+                if step % (200) == 0:
                     generate_text(model, device, step, list_losses[-1])
-                
-                if (step % 100 == 0):
                     save_model(model, device, step)
 
-        del train_loader, mytrainset, train_data
+        if device != 0:
+            continue
 
-        if device == 0:
-            print(f'\ntrain() epoch finished. step:{step}: {add*1e-6:.2f} M chars. num_pages {len(visited_urls):02d}: '+
-                  f'{"FINISHED " if step == max_steps else ""} {print_runtime(start, False)}', end='\n\n')
+        print(f'\ntraining epoch finished, step:{step}: {len(train_data)*1e-6:.2f} M tokens. '+
+              f'num_pages {len(visited_urls):02d}: '+
+              f'{"FINISHED " if step == max_steps else ""} Total time:{print_runtime(start, False)[1:-1]}', end='\n\n')
+            
         
         
         

@@ -135,7 +135,7 @@ def plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
     step = len(list_losses)
     list_num_tokens = np.array(list_num_tokens) / 1e6
     list_num_tokens_val = np.array(list_num_tokens_val) / 1e6
-    list_mins = np.array(list_mins)  # change to mins
+    list_mins0, list_mins1 = list_mins  
     
     fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(3.5 * 1.618, 10.5)) 
     ax1, ax2, ax3 = axs
@@ -148,16 +148,18 @@ def plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
     yticks = ax1.get_yticks()
     ax1.set_yticks(range(0, int(max(yticks))))
     
-    ax2.set_title('learning_rate')
     ax2.plot(list_num_tokens, list_lr, 'k.', alpha=.5, label='learning_rate')
-    ax1.set_xlim(0)
+    ax2.set_xlim(0)
     ax2.set_ylim(0)
 
-    ax3.set_title('Wall time')
-    ax3.plot(list_num_tokens, list_mins, 'k.', alpha=.5, label='Wall time (mins)')
-    ax1.set_xlim(0)
-    ax3.set_ylim(0)
+    ax3.semilogy(list_num_tokens, list_mins1, 'k', alpha=.2, label='Wall time - each batch(sec)')
+    ax3.semilogy(list_num_tokens, list_mins1, 'k.', alpha=.5)
+    ax3.semilogy(list_num_tokens_val, list_mins0, 'r', alpha=.2, label='Wall time (30 steps)')
+    ax3.semilogy(list_num_tokens_val, list_mins0, 'r.', alpha=.5)
+    ax3.set_xlim(0)
     ax3.set_xlabel('Million tokens')
+    for ax in axs:
+        ax.legend()
 
     if savefig:
         pst = pytz.timezone('US/Pacific')
@@ -205,8 +207,6 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
     """
 
     s0 = time.time()
-    if device==0:
-        print(f'crawl_wiki_data: add={add/1e6:.2f} M chars ...')
 
     # initialize variables
     num_chars_init = num_chars
@@ -244,7 +244,7 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
 #         json.dump(all_visited_urls, f)
 
     if device==0:
-        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f}M chars {len(data)*1e-6:.2f}M tokens '+
+        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f} M chars {len(data)*1e-6:.2f} M tokens '+
               f'len(visited_urls):{len(visited_urls)}, '+
               f'number of new pages crawled: {len(new_links) - n0} '+
               f'{print_runtime(s0, False)}\n')

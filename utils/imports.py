@@ -1,10 +1,10 @@
 # Hyperparameters for transformer model
-d_model = 1728
-n_heads = 18
-n_layer = 24
-learning_rate = 2e-4
-batch_size = 70 # (B) # each GPU gets `batch_size/world_size` samples
-block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
+d_model = 64
+n_heads = 4
+n_layer = 4
+block_size = 64 # (T) # maximum context length for predictions. Looks at 256 to predict 257
+batch_size = 64 # (B) # each GPU gets `batch_size/world_size` samples
+learning_rate = 3e-4
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 max_steps = 10000
 
