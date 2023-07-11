@@ -244,8 +244,7 @@ def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
 #         json.dump(all_visited_urls, f)
 
     if device==0:
-        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f} M chars {len(data)*1e-6:.2f} M tokens '+
-              f'len(visited_urls):{len(visited_urls)}, '+
+        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f} M chars,  {len(data)*1e-6:.2f} M tokens '+
               f'number of new pages crawled: {len(new_links) - n0} '+
               f'{print_runtime(s0, False)}\n')
 

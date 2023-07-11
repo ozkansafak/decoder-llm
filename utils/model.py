@@ -340,6 +340,7 @@ def load_train_objs(vocab_size, device, learning_rate):
     # Create a pytorch optimizer
     # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  
     optimizer = torch.optim.Adam(model.parameters(), betas=(0.9, 0.95), weight_decay=0.1, lr=learning_rate)  
+#     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)  
 
     return model, optimizer
 
@@ -443,9 +444,9 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             loss.backward() # get the gradients with backprop.
 
             # clip gradients at 1.0
-            clip_value = 1.0
-            for param in model.parameters():
-                param.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))            
+#             clip_value = 1.0
+#             for param in model.parameters():
+#                 param.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))            
 
             optimizer.step() # apply the gradient on the network parameters.
             lr_scheduler.step(num_tokens)
@@ -458,11 +459,14 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             list_num_tokens.append(num_tokens)
             list_mins[1].append((time.time() - s1))
 
+            if device == 0:
+                print(f'batch_no:{batch_no:3d}  {list_mins[1][-1]:.2f} sec')
+
             if device == 0: 
                 # print batch_no to stdout
                 if ((batch_no + 1) % 10 == 0 or (batch_no + 1) == 1):
                     print(f'batch_no:{batch_no+1:3d} of {len(train_loader)}, '+
-                          f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB ')
+                          f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB {list_mins[1][-1]:.4f}sec')
 
                 # evaluate at fixed intervals
                 if step % 30 == 0:
@@ -484,7 +488,7 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
         print(f'\ntraining epoch finished, step:{step}: {len(train_data)*1e-6:.2f} M tokens. '+
               f'num_pages {len(visited_urls):02d}: '+
               f'{"FINISHED " if step == max_steps else ""} Total time:{print_runtime(start, False)[1:-1]}', end='\n\n')
-            
+        
         
         
         
