@@ -383,7 +383,7 @@ def save_model(model, device, step, dname='models'):
 #     dt = datetime.datetime.now(pst) + delta
 #     prefix = dt.isoformat().split('.')[0]
 #     prefix = prefix.replace('T', ' | ')
-    PATH = f'{dname}/chkpt_{step:04d}.pt'
+    PATH = f'{dname}/chkpt_{step:05d}.pt'
     s0 = time.time() 
 
     if device == 0:
@@ -411,12 +411,11 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
 #     lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
 
     # tiny_shakespeare dataset
-    val_data, _ = load_shakespeare()
-    train_data = val_data[:int(len(val_data) * 0.9)]
-    val_data = val_data[int(len(val_data) * 0.9):]
-    
-    val_data = torch.tensor(encode(val_data))
-    train_data = torch.tensor(encode(train_data))
+#     val_data, _ = load_shakespeare()
+#     train_data = val_data[:int(len(val_data) * 0.9)]
+#     val_data = val_data[int(len(val_data) * 0.9):]
+#     val_data = torch.tensor(encode(val_data))
+#     train_data = torch.tensor(encode(train_data))
 
     myvalset = MyDataset(val_data, block_size)
     val_loader = torch.utils.data.DataLoader(dataset=myvalset,
@@ -437,7 +436,7 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
         num_crawls += 1
 
         # crawl a new batch of wiki pages
-#         train_data, num_chars = crawl_urls(device, list_scraped_urls[device], visited_urls, num_chars, add_gpu)
+        train_data, num_chars = crawl_urls(device, list_scraped_urls[device], visited_urls, num_chars, add_gpu)
 
         # load to DataLoader object
         mytrainset = MyDataset(train_data, block_size)

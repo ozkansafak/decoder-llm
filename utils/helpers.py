@@ -30,7 +30,7 @@ def load_val_data(device, num_pages=20):
         val_data.append(torch.tensor(tokens, dtype=torch.long))
 
     val_data = torch.cat(val_data)
-    if device == 0 :
+    if device == 0:
         print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
 
     return val_data, val_urls[:num_pages]
@@ -165,9 +165,9 @@ def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_token
     ax11.set_xlim(0)
     ax11.set_ylim(0)
 
-    ax20.semilogy(list_num_tokens, list_secs[1], 'k', alpha=.2, label='Wall time - each batch(sec)')
+    ax20.semilogy(list_num_tokens, list_secs[1], 'k', alpha=.2, label='time (one batch training)')
     ax20.semilogy(list_num_tokens, list_secs[1], 'k.', alpha=.5)
-    ax20.semilogy(list_num_tokens_val, list_secs[0], 'r', alpha=.2, label='Wall time (30 steps)')
+    ax20.semilogy(list_num_tokens_val, list_secs[0], 'r', alpha=.2, label='time (avg 30 steps)')
     ax20.semilogy(list_num_tokens_val, list_secs[0], 'r.', alpha=.5)
     ax20.set_xlim(0)
     ax20.set_xlabel('Million tokens')
