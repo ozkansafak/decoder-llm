@@ -1,18 +1,28 @@
-# Hyperparameters for transformer model
-d_model = 64
-n_heads = 4
-n_layer = 4
-block_size = 64 # (T) # maximum context length for predictions. Looks at 256 to predict 257
-batch_size = 64 # (B) # each GPU gets `batch_size/world_size` samples
-learning_rate = 3e-4
+# 76 M parameter model
+d_model = 768
+n_heads = 12
+n_layer = 12
+block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
+batch_size = 70 # (B) # total batch_size summed across all GPUs
+learning_rate =  1e-5
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 max_steps = 10000
+tokenizer = 'gpt2'
+
+# Zero train-loss on tiny_shakespeare:
+# Hyperparameters for transformer model
+d_model = 768
+n_heads = 12
+n_layer = 12
+learning_rate = 1e-4
+batch_size = 64 # (B) # each GPU gets `batch_size/world_size` samples
+block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 
 # --------------------------------------
 
 num_chars = 0 
 visited_urls = dict()
-add = 5e6 # number of characters to be crawled 
+add_gpu = int(.5e6) # number of tokens to be crawled 
 d_head = int(d_model / n_heads)
 
 assert d_model / n_heads % 1 == 0
@@ -38,37 +48,18 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-
-# ------------------------------------------------
+# ------------------------------------------------------------------------------------------------
 str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
 vocab = set(str_vocab)
 
-encFunc = ENCODING_CONSTRUCTORS['gpt2']
-encDict = encFunc()
-enc = tiktoken.Encoding(encDict['name'],
-                        pat_str=encDict['pat_str'],
-                        mergeable_ranks=encDict['mergeable_ranks'],
-                        special_tokens=encDict['special_tokens' ])
+assert tokenizer in ['gpt2', 'character']
 
-vocab_size = enc.n_vocab
-# vocab_size = len(vocab)
-encode = enc.encode
-decode = enc.decode
+    
 world_size = torch.cuda.device_count()
 if batch_size % world_size > 0:
-    print(f'===>batch_size % world_size = {batch_size % world_size}. '+
+    print(f'===> batch_size % world_size = {batch_size % world_size}. '+
           f'batch_size will be clipped to {world_size * (batch_size // world_size)}')
 batch_size //= world_size
-
-# A simple character based tokenizer.
-# stoi = {s:i for i,s in enumerate(str_vocab)}
-# itos = {i:s for i,s in enumerate(str_vocab)}
-# def encode(str_input):
-#     return [stoi[c] for c in str_input]
-
-# def decode(list_idx):
-#     return ''.join([itos[i] for i in list_idx])
-    
 
 
 def print_runtime(start, printer=True):
@@ -97,7 +88,6 @@ def count_parameters(model):
 
 
 new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
-
 pylab.rcParams.update({'legend.fontsize': 'small',
                        'font.size'      : 12,
                        'figure.figsize' : (9, 3.5),
@@ -107,3 +97,32 @@ pylab.rcParams.update({'legend.fontsize': 'small',
                        'xtick.labelsize': 'small',
                        'ytick.labelsize': 'small'})
 
+# len(scraped_urls) = 2450704
+with open('dataset/scraped_urls.json', 'r') as f:
+    scraped_urls = json.load(f)
+    random.shuffle(scraped_urls)
+    
+if tokenizer == 'gpt2':
+    encFunc = ENCODING_CONSTRUCTORS['gpt2']
+    encDict = encFunc()
+    enc = tiktoken.Encoding(encDict['name'], pat_str=encDict['pat_str'], mergeable_ranks=encDict['mergeable_ranks'], 
+                            special_tokens=encDict['special_tokens' ])
+    vocab_size = enc.n_vocab
+    encode = enc.encode
+    decode = enc.decode
+    
+elif tokenizer == 'character':
+    vocab_size = len(vocab)
+    stoi = {s:i for i,s in enumerate(str_vocab)}
+    itos = {i:s for i,s in enumerate(str_vocab)}
+    def encode(str_input):
+        return [stoi[c] for c in str_input]
+
+    def decode(list_idx):
+        return ''.join([itos[i] for i in list_idx])
+
+
+    
+    
+    
+    

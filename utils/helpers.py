@@ -16,42 +16,42 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add, encode, decode, plt, pylab
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add_gpu, encode, decode, plt, pylab, scraped_urls, tokenizer
 
 
 def load_val_data(device, num_pages=20):
     with open('dataset/val_wiki.json', 'r') as _f:
         val_urls = json.load(_f)
-        
-    _num_chars = 0
+
+    _n_tokens = 0
     val_data = []
     for i, url in enumerate(val_urls[:num_pages]):
-        text, html, _num_chars = extract_single_url(url, visited_urls, _num_chars)
-        val_data.append(torch.tensor(encode(text), dtype=torch.long))
-    
+        text, html, tokens,  _n_tokens = extract_single_url(url, visited_urls, _n_tokens)
+        val_data.append(torch.tensor(tokens, dtype=torch.long))
+
     val_data = torch.cat(val_data)
     if device == 0 :
         print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
-        
+
     return val_data, val_urls[:num_pages]
 
 
-def extract_single_url(url, visited_urls, num_chars):
-    """ :param num_chars: cumulative number of characters in crawled.
+def extract_single_url(url, visited_urls, n_tokens):
+    """ :param n_tokens: cumulative number of tokens crawled.
         :param visited_urls: visited_url[url] = len(text)
                              This function updates `visited_urls` in place.
     """
 
     if url in visited_urls:
         print(f'url already in visited_urls: {url}')
-        return '', None, num_chars
+        return '', None, [], n_tokens
 
     try:
         html = urlopen(url).read()
     except Exception as e:
-        print(f'Exception:{e}, url: {url} ' + '  '*30)
+        print(f'Exception:{e}, url: {url}')
         visited_urls[url] = None
-        return '', None, num_chars
+        return '', None, [], n_tokens
 
     soup = BeautifulSoup(html, features="html.parser")
 
@@ -85,9 +85,10 @@ def extract_single_url(url, visited_urls, num_chars):
 
     # write number of characters extracted to the visited_urls dictionary
     visited_urls[url] = len(text)
-    num_chars += len(text)
+    tokens = encode(text)
+    n_tokens += len(tokens)
 
-    return text, html, num_chars
+    return text, html, tokens, n_tokens
 
 
 def get_links(html, new_links, visited_urls):  
@@ -110,10 +111,12 @@ def get_links(html, new_links, visited_urls):
     return new_links
 
 
-def shave(new_links, visited_urls):
+def shave(device, new_links, visited_urls):
     
     remove = set([url for url in new_links if url in visited_urls])
-        
+    if remove:
+        print(f'==> shave(): device:{device}, remove:{remove} !!!')
+
     for url in remove:
         new_links.remove(url)
 
@@ -128,39 +131,48 @@ def decompose_divs(soup, list_class_names, name=''):
         item.decompose()
 
 
-def plotter(device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_mins, savefig=True):
+def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
+            list_losses_val, list_secs, start, savefig=True):
+
     if device != 0:
         return
     
     step = len(list_losses)
     list_num_tokens = np.array(list_num_tokens) / 1e6
     list_num_tokens_val = np.array(list_num_tokens_val) / 1e6
-    list_mins0, list_mins1 = list_mins  
     
-    fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(3.5 * 1.618, 10.5)) 
-    ax1, ax2, ax3 = axs
-    ax1.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
-    ax1.plot(list_num_tokens_val, list_losses_val, 'r.-', alpha=.6, label='val')
-    ax1.legend()
-    ax1.set_title(f'Cross-Entropy Loss (step={step})')
-    ax1.set_xlim(0)
-    ax1.set_ylim(0)
-    yticks = ax1.get_yticks()
-    ax1.set_yticks(range(0, int(max(yticks))))
+    fig = plt.figure(figsize=(3.5 * 1.618 * 2, 3.5 * 3))
+    spec = fig.add_gridspec(3, 2, height_ratios=[1.5, 2, 2])
+    ax00 = fig.add_subplot(spec[0, :])
+    ax10 = fig.add_subplot(spec[1, 0])
+    ax11 = fig.add_subplot(spec[1, 1])
+    ax20 = fig.add_subplot(spec[2, 0])
+    ax21 = fig.add_subplot(spec[2, 1])
+
+    ax00.set_axis_off()
+    ax00.text(0.13, .9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
+    ax00.text(0.13, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
+
+    ax10.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
+    ax10.plot(list_num_tokens_val, list_losses_val, 'r.-', alpha=.6, label='val')
+    ax10.legend()
+    ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
+    ax10.set_xlim(0)
+    ax10.set_ylim(0)
+    ax10.set_yticks(range(0, int(max(ax10.get_yticks()))))
     
-    ax2.plot(list_num_tokens, list_lr, 'k.', alpha=.5, label='learning_rate')
-    ax2.set_xlim(0)
-    ax2.set_ylim(0)
+    ax11.plot(list_num_tokens, list_lr, 'k.', alpha=.5, label='learning_rate')
+    ax11.set_xlim(0)
+    ax11.set_ylim(0)
 
-    ax3.semilogy(list_num_tokens, list_mins1, 'k', alpha=.2, label='Wall time - each batch(sec)')
-    ax3.semilogy(list_num_tokens, list_mins1, 'k.', alpha=.5)
-    ax3.semilogy(list_num_tokens_val, list_mins0, 'r', alpha=.2, label='Wall time (30 steps)')
-    ax3.semilogy(list_num_tokens_val, list_mins0, 'r.', alpha=.5)
-    ax3.set_xlim(0)
-    ax3.set_xlabel('Million tokens')
-    for ax in axs:
-        ax.legend()
-
+    ax20.semilogy(list_num_tokens, list_secs[1], 'k', alpha=.2, label='Wall time - each batch(sec)')
+    ax20.semilogy(list_num_tokens, list_secs[1], 'k.', alpha=.5)
+    ax20.semilogy(list_num_tokens_val, list_secs[0], 'r', alpha=.2, label='Wall time (30 steps)')
+    ax20.semilogy(list_num_tokens_val, list_secs[0], 'r.', alpha=.5)
+    ax20.set_xlim(0)
+    ax20.set_xlabel('Million tokens')
+    [ax.legend() for ax in [ax10, ax11, ax20]]
+    
     if savefig:
         pst = pytz.timezone('US/Pacific')
         delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=20) + datetime.timedelta(seconds=42)
@@ -191,64 +203,54 @@ def clean_up(text, vocab):
 
 
 def ptxt(num_chars):
-
     if num_chars < 1e6:
-        txt = f'{num_chars*1e-3:3.2f}K'
+        txt = f'{num_chars*1e-3:3.2f} K'
     elif num_chars < 1e9:
-        txt = f'{num_chars*1e-6:3.2f}M'
+        txt = f'{num_chars*1e-6:3.2f} M'
     elif num_chars < 1e12:
-        txt = f'{num_chars*1e-9:3.2f}G'
+        txt = f'{num_chars*1e-9:3.2f} G'
 
     return txt
 
 
-def crawl_wiki_data(device, new_links, visited_urls, num_chars, add):
-    """ :param add: number of characters to be crawled and added.
+def crawl_urls(device, scraped_urls, visited_urls, n_tokens, add_gpu):
+    """ :param add_gpu: number of characters to be crawled and added by each node.
     """
 
     s0 = time.time()
+    with open('dataset/wiki_text.txt','w')  as f:
+        f.write('')
+    head = 'https://www.wikipedia.org/wiki/'
 
     # initialize variables
-    num_chars_init = num_chars
+    n_tokens_0 = n_tokens
     data = []
-    n0 = len(new_links)
+    shave(device, scraped_urls, visited_urls)
 
-    shave(new_links, visited_urls)
-
-    while num_chars < num_chars_init + add:
-        url = new_links.pop(0)
-        if url in visited_urls:
-            print(f'WARNING: url in visited_urls!!!    device:{device}')
-            stop_execution
-
-        # shuffle new_links in place
-        random.shuffle(new_links)
-
-        text, html, num_chars = extract_single_url(url, visited_urls, num_chars)
-        new_links.extend(get_links(html, new_links, visited_urls))
-        data.append(torch.tensor(encode(text), dtype=torch.long))
-
-    """   todo: get_batch() needs to take as input a single wiki page and it should output number of batches mined.
-                For now, I'm concatenating all the wiki pages in a single torch.tensor data.
-                The last sentence of a page is preceded by the first sentence of the next page.
-    """
+    page_no = 0
+    if device == 0:
+        print(f'begin crawl_urls:  device:{device},  add_gpu:{add_gpu/1e6:.3f} M,  n_tokens:{n_tokens/1e6:.2f} M,  '+
+              f'n_tokens_0:{n_tokens_0}')
+    
+    while n_tokens < n_tokens_0 + add_gpu:
+        page_no += 1
+        url = head + scraped_urls.pop(0)
+        time.sleep(.3)
+        text, html, tokens, n_tokens = extract_single_url(url, visited_urls, n_tokens)
+        
+        data.append(torch.tensor(tokens, dtype=torch.long))
 
     data = torch.cat(data)
-    head = 'https://www.wikipedia.org/wiki/'
-    list_urls = [item.split(head)[1] for item in (visited_urls)]
-    
-#     all_visited_urls = {}
-#     torch.distributed.all_gather_object(all_visited_urls, visited_urls)
-#     all_visited_urls = sorted([item.split(head)[1] for item in (visited_urls)])
-#     with open (f'text_output/cuda:{device}_{num_chars_init}_visited_urls.txt', 'w') as f:
-#         json.dump(all_visited_urls, f)
 
     if device==0:
-        print(f'crawl_wiki_data: device:{device}, add={add/1e6:.2f} M chars,  {len(data)*1e-6:.2f} M tokens '+
-              f'number of new pages crawled: {len(new_links) - n0} '+
+        print(f'crawl_scraped_urls: device:{device}, add_gpu={add_gpu/1e6:.2f} M,  {len(data)*1e-6:.2f} M tokens '+
+              f'number of new pages crawled: {page_no} '+
               f'{print_runtime(s0, False)}\n')
 
-    return data, num_chars
+    data = data[:int(add_gpu)]  # crop the data at each GPU to same length, so training progresses in sync across all nodes.
+    n_tokens = n_tokens_0 + add_gpu
+    
+    return data, n_tokens
 
 
 
