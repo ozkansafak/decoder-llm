@@ -1,22 +1,14 @@
-# 76 M parameter model
-d_model = 768
-n_heads = 12
-n_layer = 12
-block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
-batch_size = 70 # (B) # total batch_size summed across all GPUs
-learning_rate =  1e-5
+# 300 M parameter model
+d_model = 1024
+n_heads = 16
+n_layer = 16
+block_size = 512 # (T) # maximum context length for predictions.
+batch_size = 140 # (B) # total batch_size summed across all GPUs
+learning_rate = 1e-5
+
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 max_steps = 10000
 tokenizer = 'gpt2'
-
-# Zero train-loss on tiny_shakespeare:
-# Hyperparameters for transformer model
-d_model = 768
-n_heads = 12
-n_layer = 12
-learning_rate = 1e-4
-batch_size = 64 # (B) # each GPU gets `batch_size/world_size` samples
-block_size = 128 # (T) # maximum context length for predictions. Looks at 256 to predict 257
 
 # --------------------------------------
 
@@ -110,7 +102,6 @@ if tokenizer == 'gpt2':
     vocab_size = enc.n_vocab
     encode = enc.encode
     decode = enc.decode
-    
 elif tokenizer == 'character':
     vocab_size = len(vocab)
     stoi = {s:i for i,s in enumerate(str_vocab)}

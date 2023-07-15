@@ -46,8 +46,7 @@ def main(device, world_size):
     model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
     # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
-    val_data = None
-    val_data, val_urls = load_val_data(device, num_pages=30)
+    val_data = load_val_data(device, world_size)
     list_num_tokens, list_num_tokens_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], [[], []]
 
     # train loop
@@ -58,10 +57,11 @@ def main(device, world_size):
 
 
 if __name__ == '__main__':
-    import argparse
+    import argparse, time
     from utils.imports import world_size, tokenizer
     os.system('/data/home/osafak/.my_gpu_kill.sh')
-    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}\n")
+    time.sleep(.3)
+    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}")
 
     parser = argparse.ArgumentParser(description='simple distributed training job')
     args = parser.parse_args()

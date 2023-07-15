@@ -16,24 +16,21 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add_gpu, encode, decode, plt, pylab, scraped_urls, tokenizer
+from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add_gpu, encode, decode, plt, pylab, tokenizer
 
 
-def load_val_data(device, num_pages=20):
-    with open('dataset/val_wiki.json', 'r') as _f:
-        val_urls = json.load(_f)
+def load_val_data(device, world_size):
+    """ len(val_data) = 500000
+    """
+    s0 = time.time()
+    with open('dataset/val_data.json', 'r') as _f:
+        val_data = json.load(_f)
 
-    _n_tokens = 0
-    val_data = []
-    for i, url in enumerate(val_urls[:num_pages]):
-        text, html, tokens,  _n_tokens = extract_single_url(url, visited_urls, _n_tokens)
-        val_data.append(torch.tensor(tokens, dtype=torch.long))
-
-    val_data = torch.cat(val_data)
+    val_data = torch.tensor(val_data, dtype=torch.long, device=device)
     if device == 0:
-        print(f'load_val_data: num_pages:{num_pages},  val_data.shape:{val_data.shape} {val_data.device}')
-
-    return val_data, val_urls[:num_pages]
+        print(f'len(val_data):{len(val_data)}  {print_runtime(s0, False)}')
+    
+    return val_data
 
 
 def extract_single_url(url, visited_urls, n_tokens):
@@ -183,7 +180,7 @@ def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_token
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
     else:
         plt.show()
-        
+
     plt.close()
 
 
@@ -197,7 +194,7 @@ def clean_up(text, vocab):
     # idx: Remove the indices that are whitespaces and are followed by another white space.
     idx = [i for i in range(len(list_text)-1) if list_text[i] == list_text[i+1] == ' ']
     list_text = [list_text[i] for i in range(len(list_text)) if i not in set(idx)]
-    
+
     text = ''.join(list_text)
     return text
 
@@ -218,8 +215,6 @@ def crawl_urls(device, scraped_urls, visited_urls, n_tokens, add_gpu):
     """
 
     s0 = time.time()
-    with open('dataset/wiki_text.txt','w')  as f:
-        f.write('')
     head = 'https://www.wikipedia.org/wiki/'
 
     # initialize variables
@@ -229,27 +224,26 @@ def crawl_urls(device, scraped_urls, visited_urls, n_tokens, add_gpu):
 
     page_no = 0
     if device == 0:
-        print(f'begin crawl_urls:  device:{device},  add_gpu:{add_gpu/1e6:.3f} M,  n_tokens:{n_tokens/1e6:.2f} M,  '+
-              f'n_tokens_0:{n_tokens_0}')
-    
+        print(f'BEGIN crawl_urls: device:{device},  add_gpu:{add_gpu/1e6:.3f} M,  n_tokens:{n_tokens/1e6:.2f} M')
+
     while n_tokens < n_tokens_0 + add_gpu:
         page_no += 1
         url = head + scraped_urls.pop(0)
         time.sleep(.3)
         text, html, tokens, n_tokens = extract_single_url(url, visited_urls, n_tokens)
-        
+
         data.append(torch.tensor(tokens, dtype=torch.long))
 
     data = torch.cat(data)
 
     if device==0:
-        print(f'crawl_scraped_urls: device:{device}, add_gpu={add_gpu/1e6:.2f} M,  {len(data)*1e-6:.2f} M tokens '+
-              f'number of new pages crawled: {page_no} '+
-              f'{print_runtime(s0, False)}\n')
+        print(f'END crawl_urls: device:{device}, add_gpu={add_gpu/1e6:.2f} M,  {len(data)*1e-6:.2f} M tokens, '+
+              f'num pages: {page_no} '+
+              f'{print_runtime(s0, False)}')
 
     data = data[:int(add_gpu)]  # crop the data at each GPU to same length, so training progresses in sync across all nodes.
     n_tokens = n_tokens_0 + add_gpu
-    
+
     return data, n_tokens
 
 

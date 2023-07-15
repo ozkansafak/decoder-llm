@@ -265,6 +265,36 @@ def generate_tokens(model, device, idx, temperature=0.5, max_new_tokens=200):
     return idx[0]
 
 
+class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
+    # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
+    """ Linearly increases learning rate from 0.1 to 1 over `x0` training steps.
+        Decreases learning rate from 1. to 0.1 over the next `x1 - x0` steps following a b/(x+a) hyperbolic curve.
+        Stays constant at 0.1 after x1 steps.
+    """
+
+    def __init__(self, optimizer, num_tokens, x0, x1, last_epoch=-1):
+        self.num_tokens = num_tokens
+        self.x0 = x0 
+        self.x1 = x1 
+        super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
+
+    def lr_lambda(self, x):
+        # .step() invokes this function through LambdaLR
+        if x < self.x0:
+            # linear warm up stage
+            y = .9 * x / max(1, self.x0) + 0.1 
+        elif self.x0 <= x < self.x1:
+            # cosine annealing stage
+            T = (self.x1 - self.x0) * 2
+            A = .5 * .9
+            y = A * np.cos(2 * np.pi * (x - self.x0) / T) + 0.55    
+        elif self.x1 <= x:
+            # constant 10% learning_rate
+            y = .1
+
+        return y
+
+
 class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
     # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
     """ Linearly increases learning rate from 0.1 to 1 over `x0` training steps.
@@ -272,9 +302,9 @@ class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
         Stays constant at 0.1 after x1 steps.
     """
 
-    def __init__(self, optimizer, x0, x1, last_epoch=-1):
-        self.x0 = x0
-        self.x1 = x1
+    def __init__(self, optimizer, num_tokens, x0, x1, last_epoch=-1):
+        self.x0 = x0 * num_tokens
+        self.x1 = x1 * num_tokens
         super(WarmupHyperbolicDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
@@ -295,51 +325,18 @@ class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
 
 
 # def get_batch_size(batch_size, device, step, x, x0):
-#     """ linearly warms up batch size  (0,0.1) to (x0,1)
 #         Call it like this. 
 #         dynamic_batch_size = get_batch_size(batch_size, device, step, num_tokens, x1//20)
 #     """
-
 #     if x < x0:
 #         c = 0.10
 #         m = (1 - c) / x0 
 #         y = m * x + c
 #     else:
 #         y = 1
-
 #     if device == 0:
 #         print(f'get_batch_size:{device} step =', step, '  x =', x, '  x0 =', x0,  '  y=', y)
-
 #     return int(y * batch_size)
-
-
-class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
-    # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
-    """ Linearly increases learning rate from 0.1 to 1 over `x0` training steps.
-        Decreases learning rate from 1. to 0.1 over the next `x1 - x0` steps following a b/(x+a) hyperbolic curve.
-        Stays constant at 0.1 after x1 steps.
-    """
-
-    def __init__(self, optimizer, x0, x1, last_epoch=-1):
-        self.x0 = x0
-        self.x1 = x1
-        super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
-
-    def lr_lambda(self, x):
-        # .step() invokes this function through LambdaLR
-        if x < self.x0:
-            # linear warm up stage
-            y = .9 * x / max(1, self.x0) + 0.1 
-        elif self.x0 <= x < self.x1:
-            # cosine annealing stage
-            T = (self.x1 - self.x0) * 2
-            A = .5 * .9
-            y = A * np.cos(2 * np.pi * (x - self.x0) / T) + 0.55    
-        elif self.x1 <= x:
-            # constant 10% learning_rate
-            y = .1
-
-        return y
 
 
 def load_train_objs(vocab_size, device, learning_rate):
@@ -354,23 +351,40 @@ def load_train_objs(vocab_size, device, learning_rate):
     return model, optimizer
 
 
+def get_batch(val_data, block_size, batch_size, device):
+    print('A', len(val_data) , block_size)
+    assert len(val_data) >= block_size
+    ix = torch.randint(0, len(val_data) - block_size, (batch_size,))
+
+    xb = torch.stack([val_data[i:i+block_size] for i in ix])
+    yb = torch.stack([val_data[i+1:i+block_size+1] for i in ix])
+
+    xb = xb.to(device)
+    yb = yb.to(device)
+
+    return xb, yb
+
+
 @torch.no_grad()  # prevent allocation of gradient nodes by telling torch we're never gonna call .backward()
 def estimate_loss(model, val_loader, device):
+    s0 = time.time()
+    
     model.eval()
-
     val_loss = []
     for batch_no, (xb, yb) in enumerate(val_loader):
         xb, yb = xb.to(device), yb.to(device)
         logits, iloss = model(xb, yb) # evaluate the loss, logits shape = (B*T/world_size, vocab_size)
         iloss = iloss.mean() # take average across all available GPUs
         val_loss.append(iloss.item())
-    
+        
     model.train()
 
     return sum(val_loss) / len(val_loss)
 
 
 def load_shakespeare(num_chars=0, filename='dataset/tiny_shakespeare.txt'):
+    """ 338,025 tokens
+    """
     with open(filename, 'r', encoding='utf-8') as f:
         train_data = f.read()
 
@@ -378,18 +392,14 @@ def load_shakespeare(num_chars=0, filename='dataset/tiny_shakespeare.txt'):
 
 
 def save_model(model, device, step, dname='models'):
-#     pst = pytz.timezone('US/Pacific')
-#     delta = - datetime.timedelta(hours=8) + datetime.timedelta(minutes=20) + datetime.timedelta(seconds=42)
-#     dt = datetime.datetime.now(pst) + delta
-#     prefix = dt.isoformat().split('.')[0]
-#     prefix = prefix.replace('T', ' | ')
     PATH = f'{dname}/chkpt_{step:05d}.pt'
     s0 = time.time() 
 
-    if device == 0:
-        torch.save(model.state_dict(), PATH)
+#     if device == 0:
+#         torch.save(model.state_dict(), PATH)
+#     print(f'Saved model "{PATH}"  {print_runtime(s0, False)}')
 
-    print(f'Saved model "{PATH}"  {print_runtime(s0, False)}')
+    return
 
 
 def load_model(model, PATH):
@@ -397,18 +407,29 @@ def load_model(model, PATH):
     model.eval()
 
 
+def get_batch(data, block_size, batch_size, device):
+    ix = torch.randint(len(train_data) - block_size, (batch_size,))
+    xb = torch.stack([data[i:i+block_size] for i in ix])
+    yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
+
+    xb = xb.to(device)
+    yb = yb.to(device)
+    
+    return xb, yb
+
+
 def train(device, model, optimizer, num_chars, val_data, world_size,
           list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, list_lr, list_secs):
 
     start = time.time()
-    step = 0
+    step = old_step = 0
     num_crawls = 0
     sample_no = 0
     num_tokens = 0
     num_batches = 0
-    x0 = .375e6 / 10 # num_tokens at end of Linear warm up
-    x1 = 260e6  / 10 # num_tokens at end of Cosine Annealing or Hyperbolic Decay
-#     lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
+    x0 = .375e6 * 100  # num_tokens at end of Linear warm up
+    x1 = 260e6   # num_tokens at end of Cosine Annealing or Hyperbolic Decay
+    lr_scheduler = WarmupCosineAnnealing(optimizer, num_tokens, x0=x0, x1=x1)
 
     # tiny_shakespeare dataset
 #     val_data, _ = load_shakespeare()
@@ -419,7 +440,7 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
 
     myvalset = MyDataset(val_data, block_size)
     val_loader = torch.utils.data.DataLoader(dataset=myvalset,
-                                             batch_size=batch_size,
+                                             batch_size=max(2,batch_size),
                                              shuffle=False,
                                              sampler=DistributedSampler(myvalset))
 
@@ -432,6 +453,7 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
     n_chunks = len(scraped_urls) // world_size
     list_scraped_urls = [scraped_urls[i*n_chunks : (i+1)*n_chunks] for i in range(world_size)]
 
+    s0 = time.time()
     while step < max_steps:
         num_crawls += 1
 
@@ -439,14 +461,13 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
         train_data, num_chars = crawl_urls(device, list_scraped_urls[device], visited_urls, num_chars, add_gpu)
 
         # load to DataLoader object
-        mytrainset = MyDataset(train_data, block_size)
+        mytrainset = MyDataset(train_data, block_size=block_size)
         train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
                                                    batch_size=max(2,batch_size),
                                                    shuffle=False,
                                                    sampler=DistributedSampler(mytrainset))
 
         # train-loop
-        s0 = time.time()
         for batch_no, (xb, yb) in enumerate(train_loader):
             s1 = time.time()
             step += 1
@@ -455,13 +476,12 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             mb1 = xb.element_size() * len(xb) * block_size * (block_size+1) / 2 * 1e-6
             mb2 = yb.element_size() * len(yb) * block_size * (block_size+1) / 2 * 1e-6
             logits, loss = model(xb, yb) # evaluate the loss
-
             loss = loss.mean() # take average across the 8 GPUs
             optimizer.zero_grad(set_to_none=False)
-            loss.backward() # get the gradients with backprop.
 
+            loss.backward() # walltime spikes because of this operation.
             optimizer.step() # apply the gradient on the network parameters.
-#             lr_scheduler.step(num_tokens)
+            lr_scheduler.step(num_tokens)
             list_lr.append(optimizer.param_groups[-1]['lr'])
             torch.distributed.all_reduce(loss)
             loss /= world_size
@@ -474,19 +494,21 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
 
             if device == 0:
                 # print batch_no to stdout
-                if ((batch_no + 1) % 10 == 0 or (batch_no + 1) == 1):
-                    print(f'batch_no:{batch_no+1:3d} of {len(train_loader)}, '+
-                          f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB {list_secs[1][-1]:.2f} sec')
+                if ((batch_no + 1) % 10 == 0 or batch_no == 0):
+                    print(f'batch_no:{batch_no:3d} of {len(train_loader)}, '+
+                          f'loss:{loss.item():.2f}, Memory per GPU={mb1+mb2:.2f} MB {list_secs[1][-1]:.3f} sec')
 
                 # evaluate at fixed intervals
-                if step % 30 == 0:
+                if batch_no == len(train_loader) - 1:
                     print('\n' + '---' *30 + '\n')
-                    print(f'estimating loss... step:{step:3d},  since last estimate_loss:{print_runtime(s0, False)}')
+                    print(f'estimating loss... batch_no:{batch_no} -- len(xb):{len(xb)} -- since last call:{print_runtime(s0, False)}')
                     list_losses_val.append(estimate_loss(model, val_loader, device))
                     list_num_tokens_val.append(num_tokens)
-                    list_secs[0].append((time.time() - s0))
-                    print('list_secs[0]', list_secs[0])
+                    list_secs[0].append((time.time() - s0) / (step - old_step))
+                    print(f'crawled batches finished in {(step - old_step)} steps')
+                    old_step = step
                     s0 = time.time()
+                    
                     plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
                             list_losses_val, list_secs, start)
 
@@ -497,7 +519,49 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
         if device == 0:
             print(f'\ntraining epoch finished, num_crawls:{num_crawls}, step:{step}: {len(train_data)*1e-6:.2f} M tokens. '+
                   f'num_pages {len(visited_urls):02d}: '+
-                  f'{"FINISHED " if step == max_steps else ""} Total time:{print_runtime(start, False)[1:-1]}', end='\n\n')
+                  f'{"FINISHED " if step == max_steps else ""}Total time:{print_runtime(start, False)[1:-1]}', end='\n\n')
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
         
         
         
