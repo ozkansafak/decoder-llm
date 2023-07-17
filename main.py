@@ -35,9 +35,9 @@ def ddp_setup(device: int, world_size: int):
 def main(device, world_size):
     ddp_setup(device, world_size)
 
-    from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, tokenizer
-    from utils.helpers import load_val_data, extract_single_url, get_links, shave, decompose_divs, plotter, clean_up, ptxt
-    from utils.model import DecoderModel, generate_text, estimate_loss, load_train_objs, train
+    from utils.imports import vocab_size, learning_rate, num_chars, tokenizer
+    from utils.helpers import load_val_data
+    from utils.model import load_train_objs, train
     torch.manual_seed(device)
 
     # instantiate model
@@ -74,7 +74,6 @@ if __name__ == '__main__':
     """
         NOTES:
          -  plotter variable 'list_num_tokens', 'list_losses'..  how are they being reduced?
-         -  'visited_urls' should be gathered into 'all_visited_urls'
          
     """
 

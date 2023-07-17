@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, count_parameters, d_head, vocab_size, vocab, new_links, visited_urls, batch_size, d_model, n_heads, n_layer, block_size, learning_rate, dropout, max_steps, num_chars, add_gpu, encode, decode, plt, pylab, tokenizer
+from utils.imports import print_runtime, vocab, visited_urls, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab
 
 
 def load_val_data(device, world_size):
@@ -88,24 +88,24 @@ def extract_single_url(url, visited_urls, n_tokens):
     return text, html, tokens, n_tokens
 
 
-def get_links(html, new_links, visited_urls):  
-    if html is None:
-        return []
+# def get_links(html, new_links, visited_urls):  
+#     if html is None:
+#         return []
 
-    parser = BeautifulSoup(html, 'html.parser')
-    links = {('https://www.wikipedia.org' + item.get('href'))
-             for item in parser.find_all('a') 
-             if item.get('href') and item.get('href').startswith('/wiki/')}
+#     parser = BeautifulSoup(html, 'html.parser')
+#     links = {('https://www.wikipedia.org' + item.get('href'))
+#              for item in parser.find_all('a') 
+#              if item.get('href') and item.get('href').startswith('/wiki/')}
 
-    # exclude URLs where there's a colon between two characters 
-    # eg. https://www.wikipedia.org/wiki/Category:Articles_with_BNF_identifiers
-    links = [url for url in links if not re.findall("[a-zA-Z0-9]:[a-zA-Z0-9]", url)]
+#     # exclude URLs where there's a colon between two characters 
+#     # eg. https://www.wikipedia.org/wiki/Category:Articles_with_BNF_identifiers
+#     links = [url for url in links if not re.findall("[a-zA-Z0-9]:[a-zA-Z0-9]", url)]
     
-    # only retain URLs that are not in `visited_url`
-    set_exclude = set(visited_urls.keys()).union(set(new_links))
-    new_links = [url for url in links if url not in set_exclude]
+#     # only retain URLs that are not in `visited_url`
+#     set_exclude = set(visited_urls.keys()).union(set(new_links))
+#     new_links = [url for url in links if url not in set_exclude]
 
-    return new_links
+#     return new_links
 
 
 def shave(device, new_links, visited_urls):
@@ -138,6 +138,7 @@ def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_token
     list_num_tokens = np.array(list_num_tokens) / 1e6
     list_num_tokens_val = np.array(list_num_tokens_val) / 1e6
     
+    # define subplots layout
     fig = plt.figure(figsize=(3.5 * 1.618 * 2, 3.5 * 3))
     spec = fig.add_gridspec(3, 2, height_ratios=[1.5, 2, 2])
     ax00 = fig.add_subplot(spec[0, :])
@@ -147,27 +148,27 @@ def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_token
     ax21 = fig.add_subplot(spec[2, 1])
 
     ax00.set_axis_off()
-    ax00.text(0.13, .9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
-    ax00.text(0.13, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
+    ax00.text(0, .9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
+    ax00.text(0, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
 
-    ax10.plot(list_num_tokens, list_losses, 'k', alpha=.6, label='train')
-    ax10.plot(list_num_tokens_val, list_losses_val, 'r.-', alpha=.6, label='val')
+    ax10.plot(list_num_tokens, list_losses, 'k-', alpha=.6, label='train')
+    ax10.plot(list_num_tokens_val, list_losses_val, 'r-', alpha=.6, label='val')
     ax10.legend()
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
     ax10.set_xlim(0)
     ax10.set_ylim(0)
-    ax10.set_yticks(range(0, int(max(ax10.get_yticks()))))
     
     ax11.plot(list_num_tokens, list_lr, 'k.', alpha=.5, label='learning_rate')
     ax11.set_xlim(0)
     ax11.set_ylim(0)
 
-    ax20.semilogy(list_num_tokens, list_secs[1], 'k', alpha=.2, label='time (one batch training)')
+    ax20.semilogy(list_num_tokens, list_secs[1], 'k', alpha=.2, label='time (one batch)')
     ax20.semilogy(list_num_tokens, list_secs[1], 'k.', alpha=.5)
     ax20.semilogy(list_num_tokens_val, list_secs[0], 'r', alpha=.2, label='time (avg 30 steps)')
     ax20.semilogy(list_num_tokens_val, list_secs[0], 'r.', alpha=.5)
     ax20.set_xlim(0)
-    ax20.set_xlabel('Million tokens')
+    
+    [ax.set_xlabel('Million tokens') for ax in [ax10, ax11, ax20]]
     [ax.legend() for ax in [ax10, ax11, ax20]]
     
     if savefig:
@@ -176,8 +177,8 @@ def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_token
         dt = datetime.datetime.now(pst) + delta
         prefix = dt.isoformat().split('.')[0]
         prefix = prefix.replace('T', ' | ')
-        print(f'Saving "figures/loss_{prefix}.png"')
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
+        print(f'Saved "figures/loss_{prefix}.png"')
     else:
         plt.show()
 
@@ -236,8 +237,8 @@ def crawl_urls(device, scraped_urls, visited_urls, n_tokens, add_gpu):
 
     data = torch.cat(data)
 
-    if device==0:
-        print(f'END crawl_urls: device:{device}, add_gpu={add_gpu/1e6:.2f} M,  {len(data)*1e-6:.2f} M tokens, '+
+    if device == 0:
+        print(f'END crawl_urls: device:{device}, add_gpu={add_gpu/1e6:.2f} M,  {len(data)/1e6:.2f} M tokens, '+
               f'num pages: {page_no} '+
               f'{print_runtime(s0, False)}')
 
@@ -246,6 +247,41 @@ def crawl_urls(device, scraped_urls, visited_urls, n_tokens, add_gpu):
 
     return data, n_tokens
 
+
+def google_corpus_1B(device, PATH="", n_tokens=0):
+    """ news-commentary-v6.en   0.024 GB
+        news.2008.en.shuffled   4.388 GB
+        news.2007.en.shuffled   1.770 GB
+        europarl-v6.en          0.296 GB
+        news.2010.en.shuffled   2.094 GB
+        news.2011.en.shuffled   0.286 GB
+        news.2009.en.shuffled   5.385 GB
+    """
+    directory = "/data/home/osafak/code/mygpt/dataset/multilingual-25G"
+    PATH = f"{directory}/*.en*"
+    ls = glob.glob(PATH)
+
+    fname = ls[1]
+    with open(fname, 'r') as f:
+        text = f.read()
+    
+    # replace compatible characters with equivalents in English alphabet.
+    text = unicodedata.normalize("NFKD", text)
+    text = unidecode.unidecode(text)
+
+    # clean up text. 
+    text = clean_up(text, vocab)
+
+    # tokenize the text.
+    data = torch.tensor(encode(text), dtype=torch.long)
+    n_tokens += len(data)
+
+    return data, n_tokens
+
+    
+    
+
+    
 
 
 

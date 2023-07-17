@@ -1,20 +1,21 @@
 # 300 M parameter model
 d_model = 1024
 n_heads = 16
-n_layer = 16
+n_layers = 16
 block_size = 512 # (T) # maximum context length for predictions.
-batch_size = 140 # (B) # total batch_size summed across all GPUs
-learning_rate = 1e-5
+batch_size = 70 # (B) # total batch_size summed across all GPUs
+learning_rate = 3e-5
+max_acc_batch_size = 0.5e6  #4 * batch_size * block_size # 172032
 
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-max_steps = 10000
+max_steps = 20000
 tokenizer = 'gpt2'
 
 # --------------------------------------
 
 num_chars = 0 
 visited_urls = dict()
-add_gpu = int(.5e6) # number of tokens to be crawled 
+add_gpu = int(5e6) # number of tokens to be crawled 
 d_head = int(d_model / n_heads)
 
 assert d_model / n_heads % 1 == 0
@@ -53,6 +54,7 @@ if batch_size % world_size > 0:
           f'batch_size will be clipped to {world_size * (batch_size // world_size)}')
 batch_size //= world_size
 
+max_acc_batch_size = (max_acc_batch_size // (batch_size * block_size)) * (batch_size * block_size)  
 
 def print_runtime(start, printer=True):
     end = time.time()
@@ -79,7 +81,6 @@ def count_parameters(model):
     return total_params
 
 
-new_links = ["https://www.wikipedia.org/wiki/David_Bowie"]
 pylab.rcParams.update({'legend.fontsize': 'small',
                        'font.size'      : 12,
                        'figure.figsize' : (9, 3.5),
