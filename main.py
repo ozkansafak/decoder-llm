@@ -46,11 +46,12 @@ def main(device, world_size):
     model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
     # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
-    val_data = load_val_data(device, world_size)
+    # val_data = load_val_data(device, world_size)
+    val_data = None
     list_num_tokens, list_num_tokens_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], [[], []]
 
     # train loop
-    train(device, model, optimizer, num_chars, val_data, world_size, 
+    train(device, model, optimizer, val_data, world_size, 
           list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, list_lr, list_secs)
 
     destroy_process_group()

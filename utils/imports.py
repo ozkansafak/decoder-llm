@@ -1,7 +1,7 @@
 # 300 M parameter model
 d_model = 1024
 n_heads = 16
-n_layers = 16
+n_layers = 24
 block_size = 512 # (T) # maximum context length for predictions.
 batch_size = 70 # (B) # total batch_size summed across all GPUs
 learning_rate = 3e-5
@@ -54,7 +54,7 @@ if batch_size % world_size > 0:
           f'batch_size will be clipped to {world_size * (batch_size // world_size)}')
 batch_size //= world_size
 
-max_acc_batch_size = (max_acc_batch_size // (batch_size * block_size)) * (batch_size * block_size)  
+max_acc_batch_size = (max_acc_batch_size // (batch_size * block_size * world_size)) * (batch_size * block_size * world_size)  
 
 def print_runtime(start, printer=True):
     end = time.time()
@@ -81,17 +81,13 @@ def count_parameters(model):
     return total_params
 
 
-pylab.rcParams.update({'legend.fontsize': 'small',
-                       'font.size'      : 12,
-                       'figure.figsize' : (9, 3.5),
-                       'axes.labelsize' : 'small',
-                       'axes.titlesize' : 'small',
-                       'axes.grid'      : 'on',
-                       'xtick.labelsize': 'small',
-                       'ytick.labelsize': 'small'})
-
-# len(scraped_urls) = 2450704
+_directory = "/data/home/osafak/code/mygpt/dataset/news_json"
+_PATH = f"{_directory}/*.json"
+ls = glob.glob(_PATH)
+ls.sort(key=lambda x: x.split("/")[-1])
+    
 with open('dataset/scraped_urls.json', 'r') as f:
+    # len(scraped_urls) = 2450704
     scraped_urls = json.load(f)
     random.shuffle(scraped_urls)
     
@@ -113,8 +109,12 @@ elif tokenizer == 'character':
     def decode(list_idx):
         return ''.join([itos[i] for i in list_idx])
 
+pylab.rcParams.update({'legend.fontsize': 'small',
+                   'font.size'      : 12,
+                   'figure.figsize' : (9, 3.5),
+                   'axes.labelsize' : 'small',
+                   'axes.titlesize' : 'small',
+                   'axes.grid'      : 'on',
+                   'xtick.labelsize': 'small',
+                   'ytick.labelsize': 'small'})
 
-    
-    
-    
-    

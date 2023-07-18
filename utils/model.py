@@ -16,9 +16,9 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, d_model, n_heads, n_layers, block_size, learning_rate, dropout, max_steps, num_chars, encode, decode, world_size, scraped_urls, add_gpu, tokenizer, max_acc_batch_size
+from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, d_model, n_heads, n_layers, block_size, learning_rate, dropout, max_steps, num_chars, encode, decode, world_size, add_gpu, tokenizer, max_acc_batch_size
 
-from utils.helpers import plotter, crawl_urls
+from utils.helpers import plotter, crawl_urls, read_google_corpus_tokens
 
 torch.manual_seed(1337)
 
@@ -352,7 +352,7 @@ def load_train_objs(vocab_size, device, learning_rate):
 
 
 def get_batch(val_data, block_size, batch_size, device):
-    print('A', len(val_data) , block_size)
+    print('D.', len(val_data) , block_size)
     assert len(val_data) >= block_size
     ix = torch.randint(0, len(val_data) - block_size, (batch_size,))
 
@@ -418,25 +418,31 @@ def get_batch(data, block_size, batch_size, device):
     return xb, yb
 
 
-def train(device, model, optimizer, num_chars, val_data, world_size,
+def train(device, model, optimizer, val_data, world_size,
           list_num_tokens, list_losses, list_num_tokens_val, list_losses_val, list_lr, list_secs):
 
     start = time.time()
     step = old_step = 0
-    num_crawls = 0
     sample_no = 0
-    num_tokens = 0
+    num_tokens = 0 
     acc_batch_size = 0
+    idx_json = 0
+    num_crawl = 0
     x0 = .375e6 * 100  # num_tokens at end of Linear warm up
     x1 = 260e6   # num_tokens at end of Cosine Annealing or Hyperbolic Decay
     lr_scheduler = WarmupCosineAnnealing(optimizer, num_tokens, x0=x0, x1=x1)
 
     # tiny_shakespeare dataset:
-    # val_data, _ = load_shakespeare()
+    val_data, _ = load_shakespeare()
     # train_data = val_data[:int(len(val_data) * 0.9)]
-    # val_data = val_data[int(len(val_data) * 0.9):]
-    # val_data = torch.tensor(encode(val_data))
+    val_data = val_data[int(len(val_data) * 0.9):]
+    val_data = torch.tensor(encode(val_data))
     # train_data = torch.tensor(encode(train_data))
+
+    # crawl a new batch of wiki pages
+    val_data, idx_json = read_google_corpus_tokens(device, idx_json)
+    if device == 0: 
+        print(f'len(val_data):{len(val_data)}')
 
     # load validation data into DataLoader object
     myvalset = MyDataset(val_data, block_size)
@@ -451,16 +457,15 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
     list_secs[0].append(None)
     plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, list_losses_val, list_secs, start)
 
-    n_chunks = len(scraped_urls) // world_size
-    list_scraped_urls = [scraped_urls[i*n_chunks : (i+1)*n_chunks] for i in range(world_size)]
-
     s0 = time.time()
-    while step < max_steps:
-        num_crawls += 1
 
-        # crawl a new batch of wiki pages
-        train_data, num_chars = crawl_urls(device, list_scraped_urls[device], visited_urls, num_chars, add_gpu)
-
+    # train-loop
+    while num_crawl < 50e3:
+        train_data, idx_json = read_google_corpus_tokens(device, idx_json)
+        if len(train_data) < max_acc_batch_size * world_size:
+            continue
+            
+        num_crawl += 1
         # load train data into DataLoader object
         mytrainset = MyDataset(train_data, block_size=block_size)
         train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
@@ -468,7 +473,6 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
                                                    shuffle=False,
                                                    sampler=DistributedSampler(mytrainset))
 
-        # train-loop
         for batch_no, (xb, yb) in enumerate(train_loader):
             s1 = time.time()
             num_tokens += len(xb) * block_size * world_size
@@ -477,12 +481,16 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             xb, yb = xb.to(device), yb.to(device)
             logits, loss = model(xb, yb) # evaluate the loss
             if device == 0:
-                print(f'A. step:{step}  loss: {loss:.2f} -- {acc_batch_size*1e-3:.2f}K/{int(max_acc_batch_size*1e-3)}K')
-            loss.backward() # adds to the parameter gradients
-            
+                print(f'A. step:{step}  batch_no:{batch_no}/{len(train_loader)}  loss: {loss:.2f} -- '+
+                      f'{acc_batch_size:6d}/{int(max_acc_batch_size):6d}     ')
+
+            loss.backward() # adds to the gradients
             if acc_batch_size < max_acc_batch_size:
                 continue
-                
+            else:
+                if device == 0:
+                    print()
+
             step += 1
             acc_batch_size = 0
             optimizer.step() # Updates the weights:  w = w - grad * lr
@@ -498,51 +506,32 @@ def train(device, model, optimizer, num_chars, val_data, world_size,
             list_secs[1].append(time.time() - s1)
 
             if device == 0:
-                # print batch_no to stdout
-                print(f'batch_no:{batch_no:3d} of {len(train_loader)}, '+
-                      f'loss:{loss.item():.2f}, {list_secs[1][-1]:.3f} sec')
+                if step % 1 == 0:
+                    # evaluate at fixed intervals
+                    print(f'batch_no:{batch_no:3d} of {len(train_loader)}, '+
+                          f'loss:{loss.item():.2f}, {list_secs[1][-1]:.3f} sec')
 
-                # evaluate at fixed intervals
-                print('\n' + '---' *30 + '\n')
-                print(f'estimating loss... step:{step} -- since last call:{print_runtime(s0, False)}')
-                print(f'crawled batches in {(step - old_step)} steps')
-                list_losses_val.append(estimate_loss(model, val_loader, device))
-                list_num_tokens_val.append(num_tokens)
-                list_secs[0].append((time.time() - s0) / (step - old_step))
-                old_step = step
-                s0 = time.time()
+                    print('\n' + '---' *30 + '\n')
+                    print(f'estimating loss... step:{step} -- since last call:{print_runtime(s0, False)}')
+                    list_losses_val.append(estimate_loss(model, val_loader, device))
+                    list_num_tokens_val.append(num_tokens)
+                    list_secs[0].append((time.time() - s0) / (step - old_step))
+                    old_step = step
+                    s0 = time.time()
 
-                plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
-                        list_losses_val, list_secs, start)
+                    plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
+                            list_losses_val, list_secs, start)
 
-                if num_crawls % 10 == 0:
+                if step % 5 == 0:
                     generate_text(model, device, step, list_losses[-1])
                     save_model(model, device, step)
 
         if device == 0:
-            print(f'\n.....num_crawls:{num_crawls}, step:{step}: {len(train_data)*1e-6:.2f} M tokens. '+
+            print(f'\n..... step:{step}: {len(train_data)*1e-6:.2f} M tokens. '+
                   f'num_pages {len(visited_urls):02d}: Total time:{print_runtime(start, False)[1:-1]}', end='\n\n')
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
+
+
+
         
         
         

@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, vocab, visited_urls, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab
+from utils.imports import print_runtime, vocab, visited_urls, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls
 
 
 def load_val_data(device, world_size):
@@ -26,10 +26,10 @@ def load_val_data(device, world_size):
     with open('dataset/val_data.json', 'r') as _f:
         val_data = json.load(_f)
 
-    val_data = torch.tensor(val_data, dtype=torch.long, device=device)
+    val_data = torch.tensor(val_data, dtype=torch.long, device='cpu')
     if device == 0:
         print(f'len(val_data):{len(val_data)}  {print_runtime(s0, False)}')
-    
+
     return val_data
 
 
@@ -130,9 +130,11 @@ def decompose_divs(soup, list_class_names, name=''):
 
 def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_tokens_val, 
             list_losses_val, list_secs, start, savefig=True):
-
+    
+    
     if device != 0:
         return
+    s0 = time.time()
     
     step = len(list_losses)
     list_num_tokens = np.array(list_num_tokens) / 1e6
@@ -178,7 +180,7 @@ def plotter(model, device, list_num_tokens, list_losses, list_lr, list_num_token
         prefix = dt.isoformat().split('.')[0]
         prefix = prefix.replace('T', ' | ')
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
-        print(f'Saved "figures/loss_{prefix}.png"')
+        print(f'Saved "figures/loss_{prefix}.png"  {print_runtime(s0, False)}')
     else:
         plt.show()
 
@@ -248,40 +250,23 @@ def crawl_urls(device, scraped_urls, visited_urls, n_tokens, add_gpu):
     return data, n_tokens
 
 
-def google_corpus_1B(device, PATH="", n_tokens=0):
-    """ news-commentary-v6.en   0.024 GB
-        news.2008.en.shuffled   4.388 GB
-        news.2007.en.shuffled   1.770 GB
-        europarl-v6.en          0.296 GB
-        news.2010.en.shuffled   2.094 GB
-        news.2011.en.shuffled   0.286 GB
-        news.2009.en.shuffled   5.385 GB
-    """
-    directory = "/data/home/osafak/code/mygpt/dataset/multilingual-25G"
-    PATH = f"{directory}/*.en*"
-    ls = glob.glob(PATH)
+def read_google_corpus_tokens(device, idx_json):
+    s0 = time.time()
 
-    fname = ls[1]
-    with open(fname, 'r') as f:
-        text = f.read()
-    
-    # replace compatible characters with equivalents in English alphabet.
-    text = unicodedata.normalize("NFKD", text)
-    text = unidecode.unidecode(text)
+#     directory = "/data/home/osafak/code/mygpt/dataset/news_json"
+#     PATH = f"{directory}/*.json"
+#     ls = glob.glob(PATH)
+#     ls.sort(key=lambda x: x.split("/")[-1])
 
-    # clean up text. 
-    text = clean_up(text, vocab)
+    fname = ls[idx_json % len(ls)]
+    with open(f'{fname}', 'r') as f:
+        data = json.load(f)
 
-    # tokenize the text.
-    data = torch.tensor(encode(text), dtype=torch.long)
-    n_tokens += len(data)
+    data = torch.tensor(data, dtype=torch.long)
+    if device == 0:
+        print(f'"{fname.split("/")[-1]}"  len(data):{len(data)}  {print_runtime(s0, False)}')
 
-    return data, n_tokens
-
-    
-    
-
-    
+    return data, idx_json + 1
 
 
 
