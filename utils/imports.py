@@ -1,16 +1,16 @@
 # 300 M parameter model
-d_model = 1024
+n_layers = 16
+d_model = 768
 n_heads = 16
-n_layers = 24
-block_size = 512 # (T) # maximum context length for predictions.
-batch_size = 70 # (B) # total batch_size summed across all GPUs
+block_size = 256 # (T) # maximum context length for predictions.
+batch_size = 140 # (B) # total batch_size summed across all GPUs
 learning_rate = 3e-5
-max_acc_batch_size = 0.5e6  #4 * batch_size * block_size # 172032
+
+max_acc_batch_size = int(0.5e6)
 
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-max_steps = 20000
 tokenizer = 'gpt2'
-
+eval_iter = 5
 # --------------------------------------
 
 num_chars = 0 
@@ -50,11 +50,16 @@ assert tokenizer in ['gpt2', 'character']
     
 world_size = torch.cuda.device_count()
 if batch_size % world_size > 0:
-    print(f'===> batch_size % world_size = {batch_size % world_size}. '+
-          f'batch_size will be clipped to {world_size * (batch_size // world_size)}')
+    print(f'===> batch_size not a multiple of world_size: (batch_size % world_size = {batch_size % world_size}) '+
+          f'batch_size will be clipped to {(batch_size // world_size) * world_size}')
+    batch_size = (batch_size // world_size) * world_size
+
+# this is batch_size (B) per gpu.
 batch_size //= world_size
 
 max_acc_batch_size = (max_acc_batch_size // (batch_size * block_size * world_size)) * (batch_size * block_size * world_size)  
+
+num_chunked_batches = int(max_acc_batch_size / (batch_size * block_size * world_size))
 
 def print_runtime(start, printer=True):
     end = time.time()
