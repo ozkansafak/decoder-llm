@@ -1,9 +1,9 @@
 # 300 M parameter model
-n_layers = 16
-d_model = 768
-n_heads = 16
-block_size = 256 # (T) # maximum context length for predictions.
-batch_size = 140 # (B) # total batch_size summed across all GPUs
+n_layers = 24
+d_model = 1536
+n_heads = 24
+block_size = 512 # (T) # maximum context length for predictions.
+batch_size = 28 # (B) # total batch_size summed across all GPUs
 learning_rate = 3e-5
 
 max_acc_batch_size = int(0.5e6)

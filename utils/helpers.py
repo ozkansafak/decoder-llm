@@ -119,8 +119,8 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax00.text(0, 0.9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
     ax00.text(0, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
 
-    ax10.plot(list_steps, list_losses, 'k-', alpha=.6, label='train')
-    ax10.plot(list_steps_val, list_losses_val, 'r-', alpha=.6, label='val')
+    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label='train')
+    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label='val')
     ax10.legend()
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
     ax10.set_xlim(0)
@@ -130,11 +130,11 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax11.set_xlim(0)
     ax11.set_ylim(0)
 
-    ax20.semilogy(list_steps, list_secs, 'k.', alpha=.5, label='time (one batch)')
+    ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='time (one batch)')
     ax20.set_ylabel('sec')
     ax20.set_xlim(0)
 
-    ax21.semilogy(list_steps_val, list_ppl_val, 'k.-', alpha=.6, label='PPL dev')
+    ax21.semilogy(list_steps_val, list_ppl_val, 'k.-', alpha=.6, label=f'PPL (val)\n{min(list_ppl_val):.1f}')
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]
     [ax.legend() for ax in [ax10, ax11, ax20, ax21]]
     
