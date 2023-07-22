@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, vocab, visited_urls, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls
+from utils.imports import print_runtime, vocab, visited_urls, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls_pt
 
 
 def load_val_data(device, world_size):
@@ -59,37 +59,21 @@ def ptxt(num_chars):
     return txt
 
 
-def read_google_corpus_tokens(device, idx_json):
-    s0 = time.time()
-    
-    fname = ls[idx_json % len(ls)]
-    with open(f'{fname}', 'r') as f:
-        data = json.load(f)
-
-    data = torch.tensor(data, dtype=torch.long)
-    if device == 0:
-        print(f'"read_google_corpus_tokens: {fname.split("/")[-1]}"  len(data):{len(data)}  {print_runtime(s0, False)}')
-
-    return data, idx_json + 1
-
-
-def read_google_corpus_tensors(device, idx_json):
+def load_google_corpus(device, idx_file):
     s0 = time.time()
 
-    #fname = ls[idx_json % len(ls)]
-    fname = '/data/home/osafak/code/mygpt/dataset/news_tensors/news.2008.en.shuffled_001.pt'
+    fname = '/data/home/osafak/code/mygpt/dataset/news_tensors/europarl-v6.en_000.pt'
+#     fname = ls_pt[idx_file % len(ls_pt)]
     data = torch.load(fname)
+    data = data.to(torch.long)
 
     if device == 0:
-        print(f'read_google_corpus_tokens: ')
-        print(f'      {fname.split("/")[-1]}"')
-        print(f'      idx_json:{idx_json}    ')
-        print(f'      len(data):{len(data)}  ')
-        print(f'      {print_runtime(s0, False)}')
+        print(f'load_google_corpus: idx_file:{idx_file} -- {idx_file/len(ls_pt)*100:.0f} % of trainset files')
+        print(f'         {fname.split("/")[-1]}')
+        print(f'         len(data):{len(data)/1e6} million tokens')
+        print(f'         {print_runtime(s0, False)}')
     
-    data = data.clone().detach().to(torch.long)
-    
-    return data, idx_json + 1
+    return data, idx_file + 1
 
 
 def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
@@ -106,7 +90,7 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     list_steps = np.array(list_steps)
     list_steps_val = np.array(list_steps_val)
     
-    # define subplots layout
+    # define subplots layout 
     fig = plt.figure(figsize=(3.5 * 1.618 * 2, 3.5 * 3))
     spec = fig.add_gridspec(3, 2, height_ratios=[1.5, 2, 2])
     ax00 = fig.add_subplot(spec[0, :])
@@ -119,9 +103,9 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax00.text(0, 0.9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
     ax00.text(0, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
 
-    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label='train')
-    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label='val')
-    ax10.legend()
+    if list_losses and list_losses_val:
+        ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min(list_losses):.2f}')
+        ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min(list_losses_val):.2f}')
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
     ax10.set_xlim(0)
     ax10.set_ylim(0)
@@ -130,11 +114,11 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax11.set_xlim(0)
     ax11.set_ylim(0)
 
-    ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='time (one batch)')
+    ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='Wall time per step')
     ax20.set_ylabel('sec')
     ax20.set_xlim(0)
 
-    ax21.semilogy(list_steps_val, list_ppl_val, 'k.-', alpha=.6, label=f'PPL (val)\n{min(list_ppl_val):.1f}')
+    ax21.semilogy(list_steps_val, list_ppl_val, 'k.-', alpha=.6, label=f'PPL val\n{min(list_ppl_val):.2f}')
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]
     [ax.legend() for ax in [ax10, ax11, ax20, ax21]]
     
@@ -145,18 +129,11 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
         prefix = dt.isoformat().split('.')[0]
         prefix = prefix.replace('T', ' | ')
         plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
-        print(f'Saved "figures/loss_{prefix}.png"')
+        print(f'Saved plot')
     else:
         plt.show()
 
     plt.close()
-
-
-
-
-
-
-
 
 
 

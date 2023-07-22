@@ -16,9 +16,9 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, d_model, n_heads, n_layers, block_size, learning_rate, dropout, num_chars, encode, decode, world_size, add_gpu, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter
+from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, d_model, n_heads, n_layers, block_size, learning_rate, dropout, num_chars, encode, decode, world_size, add_gpu, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
 
-from utils.helpers import plotter, read_google_corpus_tokens, read_google_corpus_tensors
+from utils.helpers import plotter, load_google_corpus
 
 torch.manual_seed(1337)
 
@@ -186,7 +186,7 @@ class DecoderModel(nn.Module):
             table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'block_size', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
             table.add_row([d_model, n_layers, n_heads, d_head, block_size, 
-                           f'{batch_size*world_size}\n{batch_size}/GPU', max_acc_batch_size, learning_rate])
+                           f'{batch_size*world_size}\n{batch_size}/GPU', max_acc_batch_size, f'{learning_rate:.0e}'])
 
             self.table = table
             self.specs = str_num_params +\
@@ -223,12 +223,15 @@ class MyDataset(torch.utils.data.Dataset):
 
 
 @torch.no_grad()
-def perplexity(model, device):
+def perplexity(model, device, list_losses_val, list_ppl_val):
     # idx is (B, T) array of indices in the current context
 
     s0 = time.time()
-    data = torch.load('dataset/news_tensors/news-commentary-v6.en_000.pt')
-    data = data.clone().detach().to(torch.long)
+    # nytimes_articles.pt -- shape=13384
+    # data = torch.load('dataset/nytimes_articles.pt') 
+    
+    # We should put this in the main.py function and pass it along
+    data = torch.load('dataset/news_tensors/news-commentary-v6.en_000.pt').to(torch.long) 
 
     mytestset = MyDataset(data, block_size=block_size)
     test_loader = torch.utils.data.DataLoader(dataset=mytestset,
@@ -246,25 +249,31 @@ def perplexity(model, device):
             break
 
     torch.distributed.all_reduce(ppl)
+    torch.distributed.all_reduce(loss)
     ppl /= world_size
+    loss /= world_size
     ppl = ppl.detach().to('cpu')
+    loss = loss.detach().to('cpu')
+    
     if device == 0:
-        print(f'ppl:{ppl:.2f}   {print_runtime(s0, False)}')
-    return ppl
+        print(f'Testset ppl:{ppl:.2f} -- loss:{loss:.2f} -- {print_runtime(s0, False)}')
+        
+    list_losses_val.append(loss)
+    list_ppl_val.append(ppl)
+    return ppl, loss
 
 
-def generate_text(model, device, step=None, seed_text=''):
+def generate_text(model, device, step=None, ppl=None):
     if device != 0:
         return
     
     model.eval()
     s0 = time.time()
-    if not seed_text:
-        seed_text = 'First Citizen:\nBefore we proceed any further, hear me speak.\n\nAll:'    
+    seed_text = 'First Citizen:\nBefore we proceed any further, hear me speak.\n\nAll:'    
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
-    print(f'\n===> generate_text() step:{step} {print_runtime(s0, False)}')
+    print(f'\n===> generate_text(): step:{step} -- ppl:{ppl} -- {print_runtime(s0, False)}')
     print(output)
     print('---' *30 + '\n')
     model.train()
@@ -337,8 +346,8 @@ class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
     """
 
     def __init__(self, optimizer, num_tokens, x0, x1, last_epoch=-1):
-        self.x0 = x0 * num_tokens
-        self.x1 = x1 * num_tokens
+        self.x0 = x0 
+        self.x1 = x1 
         super(WarmupHyperbolicDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
@@ -495,62 +504,33 @@ def get_batch(data, block_size, batch_size, device):
 
     xb = xb.to(device)
     yb = yb.to(device)
-    
+
     return xb, yb
 
 
 def train(device, model, optimizer, val_data, world_size):
-
     start = time.time()
     list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs = [[] for _ in range(6)]
     list_ppl_val = []
     step = 0
     sample_no = 0
-    num_tokens = 0 
-    idx_json = 0
-    epoch = -1
-    x0 = .375e6 * 100  # num_tokens at end of Linear warm up
-    x1 = 260e6   # num_tokens at end of Cosine Annealing or Hyperbolic Decay
+    num_tokens = 0
+    idx_file = 0
+    epoch = 0
     list_steps, list_steps_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], []
     lr_scheduler = WarmupCosineAnnealing(optimizer, num_tokens, x0=x0, x1=x1)
 
-    # tiny_shakespeare dataset:
-    # val_data, _ = load_shakespeare()
-    # train_data = val_data[:int(len(val_data) * 0.9)]
-    #val_data = val_data[int(len(val_data) * 0.9):]
-    #val_data = torch.tensor(encode(val_data))
-    # train_data = torch.tensor(encode(train_data))
-
-    val_data, idx_json = read_google_corpus_tokens(device, idx_json)
-    if device == 0: 
-        print(f'len(val_data):{len(val_data)}')
-        print(f'batch_size:{batch_size}')
-        print(f'block_size:{block_size}')
-        print(f'max_acc_batch_size:{max_acc_batch_size}')
-        print(f'num_chunked_batches:{num_chunked_batches}\n')
-
-    # load validation data into DataLoader object
-    #myvalset = MyDataset(val_data, block_size)
-    #val_loader = torch.utils.data.DataLoader(dataset=myvalset,
-    #                                         batch_size=batch_size,
-    #                                         shuffle=False,
-    #                                         sampler=DistributedSampler(myvalset))
-
-    # compute losses on the randomly initialized model
     list_steps_val.append(step)
-    list_losses_val.append(None)
-    list_ppl_val.append(perplexity(model, device))
-
+    perplexity(model, device, list_losses_val, list_ppl_val)
     plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, list_losses_val, list_secs, start)
-    s0 = time.time()
 
     # train-loop
-    while epoch < 5e3:
-        # at each epoch another 0.9 billion tokens are loaded.
+    while epoch < 1e3:
         epoch += 1
+        torch.distributed.barrier()
         if device == 0: 
-            print(f'\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches}')
-        train_data, idx_json = read_google_corpus_tensors(device, idx_json)
+            print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
+        train_data, idx_file = load_google_corpus(device, idx_file)
 
         # load train data into DataLoader object
         mytrainset = MyDataset(train_data, block_size=block_size)
@@ -559,25 +539,27 @@ def train(device, model, optimizer, val_data, world_size):
                                                    shuffle=False,
                                                    sampler=DistributedSampler(mytrainset))
 
-        s1 = time.time()
-        for batch_no, (xb_step, yb_step) in enumerate(train_loader):
+        s0 = time.time()
+        for batch_no, (xb_big, yb_big) in enumerate(train_loader):
             model.train()
-            xb_step = xb_step.to(device)  #  each device ==> (34 * 4, 512)
-            yb_step = yb_step.to(device)  
+            xb_big = xb_big.to(device)  #  each device ==> (34 * 4, 512)
+            yb_big = yb_big.to(device)  
             total_size = 0
             for i in range(num_chunked_batches):
-                xb = xb_step[i*batch_size : (i+1)*batch_size]  # ecah device ==> (4, 512) 
-                yb = yb_step[i*batch_size : (i+1)*batch_size]
+                xb = xb_big[i*batch_size : (i+1)*batch_size]  # each device ==> (4, 512) 
+                yb = yb_big[i*batch_size : (i+1)*batch_size]
                 num_tokens += len(xb) * block_size * world_size
                 total_size += len(xb) * block_size * world_size
                 if device == 0:
                     print('.', end='')
-                
+
                 logits, loss = model(xb, yb) # evaluate the loss
                 loss.backward() # adds to the gradients
 
             if total_size != max_acc_batch_size:
-                print(f'device:{device}:  total_size != max_acc_batch_size.  total_size={total_size}')
+                print(f'total_size != max_acc_batch_size. device:{device}:  epoch:{epoch}'+
+                      f'total_size={total_size} -- i:{i} -- batch_no:{batch_no}')
+                continue
 
             step += 1
             optimizer.step() # Updates the weights:  w = w - grad * lr
@@ -588,36 +570,28 @@ def train(device, model, optimizer, val_data, world_size):
             loss /= world_size
             list_steps.append(step)
             list_losses.append(loss.item())
+            list_secs.append(time.time() - s0)
+            s0 = time.time()
             if device == 0: 
-                print(f'step:{step}, loss:{list_losses[-1]:.2f}')
-
-            # total number of tokens ingested by all GPUs
-            list_secs.append(time.time() - s1)
-            s1 = time.time()
+                print(f'step:{step}, loss:{list_losses[-1]:.2f} -- {list_secs[-1]:.2f} secs')
 
             if step % eval_iter == 0: # 5 steps
-                # evaluate at fixed intervals
                 if device == 0:
-                    print(f'\nstep:{step}   loss:{loss.item():.2f}   num_tokens:{num_tokens/1e6:.2f} million  '+
+                    print(f'step:{step}   loss:{loss.item():.2f}   num_tokens:{num_tokens/1e6:.2f} million  '+
                           f'batch_no:{batch_no:2d}/{len(train_loader)},  '+
-                          f'Wall Time (one step):{list_secs[-1]:.1f} sec')
+                          f'Wall Time:{list_secs[-1]:.1f} sec')
 
-                #list_losses_val.append(estimate_loss(model, val_loader, device))
+                # evaluate at fixed intervals
                 list_steps_val.append(step)
-                list_losses_val.append(None)
-                list_ppl_val.append(perplexity(model, device))
+                perplexity(model, device, list_losses_val, list_ppl_val)
 
             if step % (eval_iter * 10) == 0:  # 50 steps
                 plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
                         list_losses_val, list_secs, start)
 
             if step % (eval_iter * 100) == 0: # 500 steps
-                generate_text(model, device, step)
+                generate_text(model, device, step, ppl=list_ppl_val[-1])
                 save_ddp_model(model, device, step)
-
-        if device == 0:
-            print(f'\n..... step:{step}: {len(train_data)*1e-6:.2f} M tokens. '+
-                  f'num_pages {len(visited_urls):02d}: Total time:{print_runtime(start, False)[1:-1]}', end='\n\n')
 
 
 

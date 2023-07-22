@@ -1,13 +1,14 @@
-# 300 M parameter model
-n_layers = 24
-d_model = 1536
-n_heads = 24
+# Hyperparamerters
+n_layers = 12
+d_model = 512
+n_heads = 8
 block_size = 512 # (T) # maximum context length for predictions.
-batch_size = 28 # (B) # total batch_size summed across all GPUs
-learning_rate = 3e-5
+batch_size_gpu = 24  # (B) # total batch_size summed across all GPUs
+learning_rate = 6e-5
+x0 = 0.375e9 # num_tokens at end of Linear warm up
+x1 = 3e9  # num_tokens at end of Cosine Annealing or Hyperbolic Decay
 
 max_acc_batch_size = int(0.5e6)
-
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 tokenizer = 'gpt2'
 eval_iter = 5
@@ -46,9 +47,9 @@ str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\
 vocab = set(str_vocab)
 
 assert tokenizer in ['gpt2', 'character']
-
     
 world_size = torch.cuda.device_count()
+batch_size = batch_size_gpu * torch.cuda.device_count()
 if batch_size % world_size > 0:
     print(f'===> batch_size not a multiple of world_size: (batch_size % world_size = {batch_size % world_size}) '+
           f'batch_size will be clipped to {(batch_size // world_size) * world_size}')
@@ -56,10 +57,32 @@ if batch_size % world_size > 0:
 
 # this is batch_size (B) per gpu.
 batch_size //= world_size
-
 max_acc_batch_size = (max_acc_batch_size // (batch_size * block_size * world_size)) * (batch_size * block_size * world_size)  
-
 num_chunked_batches = int(max_acc_batch_size / (batch_size * block_size * world_size))
+
+_directory = "/data/home/osafak/code/mygpt/dataset/news_tensors"
+_PATH = f"{_directory}/*.pt"
+ls_pt = glob.glob(_PATH)
+ls_pt.sort(key=lambda x: x.split("/")[-1])
+def print_trainset_deets():
+    """
+        europarl-v6.en_000.pt        -- 59.34 million tokens
+        news-commentary-v6.en_000.pt -- 4.81 million tokens  (used as validation set)
+        news.2007.en.shuffled_000.pt -- 392.89 million tokens
+        news.2008.en.shuffled_000.pt -- 900.00 million tokens
+        news.2008.en.shuffled_001.pt -- 68.16 million tokens
+        news.2009.en.shuffled_000.pt -- 900.00 million tokens
+        news.2009.en.shuffled_001.pt -- 275.56 million tokens
+        news.2010.en.shuffled_000.pt -- 458.62 million tokens
+        news.2011.en.shuffled_000.pt -- 63.05 million tokens
+    """
+
+    if torch.distributed.get_rank() == 0:
+        print('trainset:')
+        for fname in ls_pt:
+            data = torch.load(fname)
+            print(f"         {fname.split('/')[-1]:28s} -- {len(data)/1e6:.2f} million tokens")
+
 
 def print_runtime(start, printer=True):
     end = time.time()
@@ -86,11 +109,6 @@ def count_parameters(model):
     return total_params
 
 
-_directory = "/data/home/osafak/code/mygpt/dataset/news_json"
-_PATH = f"{_directory}/*.json"
-ls = glob.glob(_PATH)
-ls.sort(key=lambda x: x.split("/")[-1])
-    
 with open('dataset/scraped_urls.json', 'r') as f:
     # len(scraped_urls) = 2450704
     scraped_urls = json.load(f)
