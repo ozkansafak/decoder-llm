@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, d_model, n_heads, n_layers, block_size, learning_rate, dropout, num_chars, encode, decode, world_size, add_gpu, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
+from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, block_size, learning_rate, dropout, num_chars, encode, decode, world_size, add_gpu, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
 
 from utils.helpers import plotter, load_google_corpus
 
@@ -30,11 +30,12 @@ class SingleHead(nn.Module):
         self.key = nn.Linear(d_model, d_head, bias=False)
         self.query = nn.Linear(d_model, d_head, bias=False)
         self.value = nn.Linear(d_model, d_head, bias=False)
+        """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. """
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        B, T, C = x.shape
+        B, T, C = x.shape  # '''(batch_size, block_size, embedding dimensions)'''
         # idx and targets are both (B,T) tensor of integers
         k = self.key(x) # (B,T,C)
         q = self.query(x) # (B,T,C)
@@ -64,7 +65,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # concatenate over the channel dimension
+        # concatenate over the channel dimension, then pass it through a linear layer to project.
         out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.proj(out)
         out = self.dropout(out)
@@ -75,7 +76,7 @@ class MLP(nn.Module):
     def __init__(self, d_model):
         super().__init__()
         self.net = nn.Sequential(
-            # as per the Attention paper, hidden layer size is 4x the input layer
+            # hidden layer size is 4x the input layer
             nn.Linear(d_model, 4 * d_model),
             nn.ReLU(),
             nn.Linear(4 * d_model, d_model),
@@ -92,7 +93,7 @@ class Block(nn.Module):
     def __init__(self, d_model, n_heads):
         # d_model: embedding dimension, n_heads: the number of heads we'd like
         super().__init__() 
-        self.sa = MultiHeadAttention(n_heads)
+        self.self_attention = MultiHeadAttention(n_heads)
         self.ffwd = MLP(d_model)
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
@@ -100,7 +101,7 @@ class Block(nn.Module):
     def forward(self, x):
         # residual connections are a wonderful invention of modern science. Fork off and come back. 
         x = self.ln1(x)
-        x = x + self.sa(x)
+        x = x + self.self_attention(x)
         x = self.ln2(x)
         x = x + self.ffwd(x)
         return x
@@ -186,7 +187,7 @@ class DecoderModel(nn.Module):
             table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'block_size', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
             table.add_row([d_model, n_layers, n_heads, d_head, block_size, 
-                           f'{batch_size*world_size}\n{batch_size}/GPU', max_acc_batch_size, f'{learning_rate:.0e}'])
+                           f'{batch_size}\n{batch_size_gpu}/GPU', max_acc_batch_size, f'{learning_rate:.0e}'])
 
             self.table = table
             self.specs = str_num_params +\
@@ -227,11 +228,10 @@ def perplexity(model, device, list_losses_val, list_ppl_val):
     # idx is (B, T) array of indices in the current context
 
     s0 = time.time()
-    # nytimes_articles.pt -- shape=13384
-    # data = torch.load('dataset/nytimes_articles.pt') 
-    
-    # We should put this in the main.py function and pass it along
-    data = torch.load('dataset/news_tensors/news-commentary-v6.en_000.pt').to(torch.long) 
+    #data = torch.load('dataset/news_tensors/news-commentary-v6.en_000.pt').to(torch.long) 
+    data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
+    data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    data = (torch.from_numpy(data.astype(np.int64))).type(torch.long)
 
     mytestset = MyDataset(data, block_size=block_size)
     test_loader = torch.utils.data.DataLoader(dataset=mytestset,
@@ -256,7 +256,7 @@ def perplexity(model, device, list_losses_val, list_ppl_val):
     loss = loss.detach().to('cpu')
     
     if device == 0:
-        print(f'Testset ppl:{ppl:.2f} -- loss:{loss:.2f} -- {print_runtime(s0, False)}')
+        print(f'                Testset ppl:{ppl:.2f} -- loss:{loss:.2f} -- {print_runtime(s0, False)}')
         
     list_losses_val.append(loss)
     list_ppl_val.append(ppl)
@@ -273,7 +273,7 @@ def generate_text(model, device, step=None, ppl=None):
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
-    print(f'\n===> generate_text(): step:{step} -- ppl:{ppl} -- {print_runtime(s0, False)}')
+    print(f'\n===> generate_text(): step:{step} -- ppl:{ppl:.2f} -- {print_runtime(s0, False)}')
     print(output)
     print('---' *30 + '\n')
     model.train()
@@ -508,6 +508,13 @@ def get_batch(data, block_size, batch_size, device):
     return xb, yb
 
 
+def load_train_data():
+    s0 = time.time()
+    data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
+    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+    return train_data
+
+
 def train(device, model, optimizer, val_data, world_size):
     start = time.time()
     list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs = [[] for _ in range(6)]
@@ -516,82 +523,89 @@ def train(device, model, optimizer, val_data, world_size):
     sample_no = 0
     num_tokens = 0
     idx_file = 0
-    epoch = 0
     list_steps, list_steps_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], []
     lr_scheduler = WarmupCosineAnnealing(optimizer, num_tokens, x0=x0, x1=x1)
 
     list_steps_val.append(step)
     perplexity(model, device, list_losses_val, list_ppl_val)
-    plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, list_losses_val, list_secs, start)
-
+    train_data = load_train_data()
+    n = len(train_data)
+    
     # train-loop
-    while epoch < 1e3:
-        epoch += 1
+    for epoch in range(1,100):
         torch.distributed.barrier()
-        if device == 0: 
+        if is_main_process(): 
             print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
-        train_data, idx_file = load_google_corpus(device, idx_file)
-
-        # load train data into DataLoader object
-        mytrainset = MyDataset(train_data, block_size=block_size)
-        train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
-                                                   batch_size=(num_chunked_batches*batch_size),
-                                                   shuffle=False,
-                                                   sampler=DistributedSampler(mytrainset))
-
-        s0 = time.time()
-        for batch_no, (xb_big, yb_big) in enumerate(train_loader):
-            model.train()
-            xb_big = xb_big.to(device)  #  each device ==> (34 * 4, 512)
-            yb_big = yb_big.to(device)  
-            total_size = 0
-            for i in range(num_chunked_batches):
-                xb = xb_big[i*batch_size : (i+1)*batch_size]  # each device ==> (4, 512) 
-                yb = yb_big[i*batch_size : (i+1)*batch_size]
-                num_tokens += len(xb) * block_size * world_size
-                total_size += len(xb) * block_size * world_size
-                if device == 0:
-                    print('.', end='')
-
-                logits, loss = model(xb, yb) # evaluate the loss
-                loss.backward() # adds to the gradients
-
-            if total_size != max_acc_batch_size:
-                print(f'total_size != max_acc_batch_size. device:{device}:  epoch:{epoch}'+
-                      f'total_size={total_size} -- i:{i} -- batch_no:{batch_no}')
-                continue
-
-            step += 1
-            optimizer.step() # Updates the weights:  w = w - grad * lr
-            optimizer.zero_grad(set_to_none=False)
-            lr_scheduler.step(num_tokens)
-            list_lr.append(optimizer.param_groups[-1]['lr'])
-            torch.distributed.all_reduce(loss)
-            loss /= world_size
-            list_steps.append(step)
-            list_losses.append(loss.item())
-            list_secs.append(time.time() - s0)
+            print(f'{((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
+            
+        for q in range(n // (max_acc_batch_size)):
+            q = 5
+            q0 = q * max_acc_batch_size
+            q1 = (q+1) * max_acc_batch_size + 1
+            data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
+            if is_main_process():
+                print(f'data_step: q:{q} of {(n // (max_acc_batch_size))} -- q0={q0} -- q1={q1}')
+            
+            mytrainset = MyDataset(data_step, block_size=block_size)
+            train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
+                                                       batch_size=(num_chunked_batches*batch_size),
+                                                       shuffle=False,
+                                                       sampler=DistributedSampler(mytrainset))
+            
             s0 = time.time()
-            if device == 0: 
-                print(f'step:{step}, loss:{list_losses[-1]:.2f} -- {list_secs[-1]:.2f} secs')
+            for batch_no, (xb_big, yb_big) in enumerate(train_loader):
+                model.train()
+                xb_big = xb_big.to(device)  # each device ==> (34 * 4, 512)
+                yb_big = yb_big.to(device)  
+                total_size = 0
+                for i in range(num_chunked_batches):
+                    xb = xb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]  # each device ==> (4, 512) 
+                    yb = yb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]
+                    num_tokens += len(xb) * block_size * world_size
+                    total_size += len(xb) * block_size * world_size
+                    if is_main_process():
+                        print('.', end='')
 
-            if step % eval_iter == 0: # 5 steps
-                if device == 0:
-                    print(f'step:{step}   loss:{loss.item():.2f}   num_tokens:{num_tokens/1e6:.2f} million  '+
-                          f'batch_no:{batch_no:2d}/{len(train_loader)},  '+
-                          f'Wall Time:{list_secs[-1]:.1f} sec')
+                    logits, loss = model(xb, yb) # evaluate the loss
+                    loss.backward() # adds to the gradients
 
-                # evaluate at fixed intervals
-                list_steps_val.append(step)
-                perplexity(model, device, list_losses_val, list_ppl_val)
+                if total_size != max_acc_batch_size:
+                    if is_main_process():
+                        print(f'total_size != max_acc_batch_size. device:{device}:  epoch:{epoch}'+
+                              f'total_size={total_size} -- i:{i} -- batch_no:{batch_no} of {len(train_loader)}')
+                    continue
 
-            if step % (eval_iter * 10) == 0:  # 50 steps
-                plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
-                        list_losses_val, list_secs, start)
+                step += 1
+                optimizer.step() # Updates the weights:  w = w - grad * lr
+                optimizer.zero_grad(set_to_none=False)
+                lr_scheduler.step(num_tokens)
+                list_lr.append(optimizer.param_groups[-1]['lr'])
+                torch.distributed.all_reduce(loss)
+                loss /= world_size
+                list_steps.append(step)
+                list_losses.append(loss.item())
+                list_secs.append(time.time() - s0)
+                s0 = time.time()
+                if is_main_process():
+                    print(f'step:{step}, loss:{list_losses[-1]:.2f} -- {list_secs[-1]:.2f} secs')
 
-            if step % (eval_iter * 100) == 0: # 500 steps
-                generate_text(model, device, step, ppl=list_ppl_val[-1])
-                save_ddp_model(model, device, step)
+                if step % eval_iter == 0: # 5 steps
+                    if is_main_process():
+                        print(f'step:{step}   loss:{loss.item():.2f}   num_tokens:{num_tokens/1e6:.2f} million  '+
+                              f'batch_no:{batch_no:2d}/{len(train_loader)},  '+
+                              f'Wall Time:{list_secs[-1]:.1f} sec')
+
+                    # evaluate at fixed intervals
+                    list_steps_val.append(step)
+                    perplexity(model, device, list_losses_val, list_ppl_val)
+
+                if step % (eval_iter * 10) == 0:  # 50 steps
+                    plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
+                            list_losses_val, list_secs, start)
+
+                if step % (eval_iter * 100) == 0: # 500 steps
+                    generate_text(model, device, step, ppl=list_ppl_val[-1])
+                    save_ddp_model(model, device, step)
 
 
 

@@ -62,16 +62,14 @@ def ptxt(num_chars):
 def load_google_corpus(device, idx_file):
     s0 = time.time()
 
-    fname = '/data/home/osafak/code/mygpt/dataset/news_tensors/europarl-v6.en_000.pt'
-#     fname = ls_pt[idx_file % len(ls_pt)]
+    # fname = '/data/home/osafak/code/mygpt/dataset/news_tensors/europarl-v6.en_000.pt'
+    fname = ls_pt[idx_file % len(ls_pt)]
     data = torch.load(fname)
     data = data.to(torch.long)
 
     if device == 0:
         print(f'load_google_corpus: idx_file:{idx_file} -- {idx_file/len(ls_pt)*100:.0f} % of trainset files')
-        print(f'         {fname.split("/")[-1]}')
-        print(f'         len(data):{len(data)/1e6} million tokens')
-        print(f'         {print_runtime(s0, False)}')
+        print(f'         {fname.split("/")[-1]} --  len(data):{len(data)/1e6:.2f} million tokens -- {print_runtime(s0, False)}')
     
     return data, idx_file + 1
 
@@ -103,12 +101,11 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax00.text(0, 0.9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
     ax00.text(0, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
 
-    if list_losses and list_losses_val:
-        ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min(list_losses):.2f}')
-        ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min(list_losses_val):.2f}')
+    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min(list_losses_val):.2f}')
+    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min(list_losses):.2f}')
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
     ax10.set_xlim(0)
-    ax10.set_ylim(0)
+    ax10.set_ylim(min(3, min(list_losses)-0.1), 11)
     
     ax11.plot(list_steps, list_lr, 'k.', alpha=.5, label='learning_rate')
     ax11.set_xlim(0)
@@ -118,7 +115,7 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax20.set_ylabel('sec')
     ax20.set_xlim(0)
 
-    ax21.semilogy(list_steps_val, list_ppl_val, 'k.-', alpha=.6, label=f'PPL val\n{min(list_ppl_val):.2f}')
+    ax21.semilogy(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'PPL val\n{min(list_ppl_val):.2f}')
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]
     [ax.legend() for ax in [ax10, ax11, ax20, ax21]]
     

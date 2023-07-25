@@ -57,10 +57,10 @@ def main(device, world_size):
 
 if __name__ == '__main__':
     import argparse, time
-    from utils.imports import world_size, tokenizer
+    from utils.imports import world_size, tokenizer, batch_jump
     os.system('/data/home/osafak/.my_gpu_kill.sh')
     time.sleep(.3)
-    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}")
+    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}\nbatch_jump:{batch_jump}")
 
     parser = argparse.ArgumentParser(description='simple distributed training job')
     args = parser.parse_args()

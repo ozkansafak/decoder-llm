@@ -2,13 +2,13 @@
 n_layers = 12
 d_model = 512
 n_heads = 8
-block_size = 512 # (T) # maximum context length for predictions.
-batch_size_gpu = 24  # (B) # total batch_size summed across all GPUs
-learning_rate = 6e-5
+block_size = 128 # (T) # maximum context length for predictions.
+batch_size_gpu = 10  # (B) # total number of batches loaded by each GPU
+learning_rate = 2e-5
 x0 = 0.375e9 # num_tokens at end of Linear warm up
 x1 = 3e9  # num_tokens at end of Cosine Annealing or Hyperbolic Decay
 
-max_acc_batch_size = int(0.5e6)
+max_acc_batch_size = int(0.51e6)
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 tokenizer = 'gpt2'
 eval_iter = 5
@@ -47,18 +47,18 @@ str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\
 vocab = set(str_vocab)
 
 assert tokenizer in ['gpt2', 'character']
-    
+
 world_size = torch.cuda.device_count()
-batch_size = batch_size_gpu * torch.cuda.device_count()
+batch_size = batch_size_gpu * world_size
 if batch_size % world_size > 0:
     print(f'===> batch_size not a multiple of world_size: (batch_size % world_size = {batch_size % world_size}) '+
           f'batch_size will be clipped to {(batch_size // world_size) * world_size}')
     batch_size = (batch_size // world_size) * world_size
 
 # this is batch_size (B) per gpu.
-batch_size //= world_size
-max_acc_batch_size = (max_acc_batch_size // (batch_size * block_size * world_size)) * (batch_size * block_size * world_size)  
-num_chunked_batches = int(max_acc_batch_size / (batch_size * block_size * world_size))
+batch_jump = (block_size * batch_size)  # number of tokens ingested in each batch
+max_acc_batch_size = (max_acc_batch_size // batch_jump) * batch_jump  
+num_chunked_batches = int(max_acc_batch_size / batch_jump) # number of loss.backward() made before doing an optim.step()
 
 _directory = "/data/home/osafak/code/mygpt/dataset/news_tensors"
 _PATH = f"{_directory}/*.pt"
@@ -128,16 +128,15 @@ elif tokenizer == 'character':
     itos = {i:s for i,s in enumerate(str_vocab)}
     def encode(str_input):
         return [stoi[c] for c in str_input]
-
     def decode(list_idx):
         return ''.join([itos[i] for i in list_idx])
 
 pylab.rcParams.update({'legend.fontsize': 'small',
-                   'font.size'      : 12,
-                   'figure.figsize' : (9, 3.5),
-                   'axes.labelsize' : 'small',
-                   'axes.titlesize' : 'small',
-                   'axes.grid'      : 'on',
-                   'xtick.labelsize': 'small',
-                   'ytick.labelsize': 'small'})
+                       'font.size'      : 12,
+                       'figure.figsize' : (9, 3.5),
+                       'axes.labelsize' : 'small',
+                       'axes.titlesize' : 'small',
+                       'axes.grid'      : 'on',
+                       'xtick.labelsize': 'small',
+                       'ytick.labelsize': 'small'})
 
