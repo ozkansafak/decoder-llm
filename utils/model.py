@@ -24,7 +24,7 @@ torch.manual_seed(1337)
 
 
 class SingleHead(nn.Module):
-    """ one-head self-attention"""
+    """ one self-attention head """
     def __init__(self):
         super().__init__()
         self.key = nn.Linear(d_model, d_head, bias=False)
@@ -224,16 +224,14 @@ class MyDataset(torch.utils.data.Dataset):
 
 
 @torch.no_grad()
-def perplexity(model, device, list_losses_val, list_ppl_val):
+def perplexity(model, device, val_data, list_losses_val, list_ppl_val):
     # idx is (B, T) array of indices in the current context
 
     s0 = time.time()
     #data = torch.load('dataset/news_tensors/news-commentary-v6.en_000.pt').to(torch.long) 
-    data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
-    data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-    data = (torch.from_numpy(data.astype(np.int64))).type(torch.long)
+    val_data = (torch.from_numpy(val_data.astype(np.int64))).type(torch.long)
 
-    mytestset = MyDataset(data, block_size=block_size)
+    mytestset = MyDataset(val_data, block_size=block_size)
     test_loader = torch.utils.data.DataLoader(dataset=mytestset,
                                               batch_size=batch_size,
                                               shuffle=False,
@@ -256,7 +254,7 @@ def perplexity(model, device, list_losses_val, list_ppl_val):
     loss = loss.detach().to('cpu')
     
     if device == 0:
-        print(f'                Testset ppl:{ppl:.2f} -- loss:{loss:.2f} -- {print_runtime(s0, False)}')
+        print(f'=> Testset ppl:{ppl:.2f} -- loss:{loss:.2f} -- {print_runtime(s0, False)}')
         
     list_losses_val.append(loss)
     list_ppl_val.append(ppl)
@@ -269,7 +267,7 @@ def generate_text(model, device, step=None, ppl=None):
     
     model.eval()
     s0 = time.time()
-    seed_text = 'First Citizen:\nBefore we proceed any further, hear me speak.\n\nAll:'    
+    seed_text = 'Some people are afraid to take that first step to start a business. '    
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
@@ -382,7 +380,7 @@ class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
 #     return int(y * batch_size)
 
 
-def load_train_objs(vocab_size, device, learning_rate):
+def initialize_model(vocab_size, device, learning_rate):
     # instantiate model
     model = DecoderModel(vocab_size, device)
 
@@ -508,50 +506,47 @@ def get_batch(data, block_size, batch_size, device):
     return xb, yb
 
 
-def load_train_data():
+def load_openwebtext_data():
     s0 = time.time()
     data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
     train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    return train_data
+    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+
+    return train_data, val_data
 
 
-def train(device, model, optimizer, val_data, world_size):
+def train(device, model, optimizer, train_data, val_data, world_size):
     start = time.time()
     list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs = [[] for _ in range(6)]
     list_ppl_val = []
     step = 0
     sample_no = 0
     num_tokens = 0
-    idx_file = 0
     list_steps, list_steps_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], []
-    lr_scheduler = WarmupCosineAnnealing(optimizer, num_tokens, x0=x0, x1=x1)
+    lr_scheduler = WarmupHyperbolicDecay(optimizer, num_tokens, x0=x0, x1=x1)
 
     list_steps_val.append(step)
-    perplexity(model, device, list_losses_val, list_ppl_val)
-    train_data = load_train_data()
+    perplexity(model, device, val_data, list_losses_val, list_ppl_val)
     n = len(train_data)
-    
+
     # train-loop
     for epoch in range(1,100):
         torch.distributed.barrier()
         if is_main_process(): 
             print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
             print(f'{((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
-            
+
         for q in range(n // (max_acc_batch_size)):
-            q = 5
             q0 = q * max_acc_batch_size
             q1 = (q+1) * max_acc_batch_size + 1
             data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
-            if is_main_process():
-                print(f'data_step: q:{q} of {(n // (max_acc_batch_size))} -- q0={q0} -- q1={q1}')
             
             mytrainset = MyDataset(data_step, block_size=block_size)
             train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
                                                        batch_size=(num_chunked_batches*batch_size),
                                                        shuffle=False,
                                                        sampler=DistributedSampler(mytrainset))
-            
+
             s0 = time.time()
             for batch_no, (xb_big, yb_big) in enumerate(train_loader):
                 model.train()
@@ -592,12 +587,11 @@ def train(device, model, optimizer, val_data, world_size):
                 if step % eval_iter == 0: # 5 steps
                     if is_main_process():
                         print(f'step:{step}   loss:{loss.item():.2f}   num_tokens:{num_tokens/1e6:.2f} million  '+
-                              f'batch_no:{batch_no:2d}/{len(train_loader)},  '+
-                              f'Wall Time:{list_secs[-1]:.1f} sec')
+                              f'batch_no:{batch_no:2d}/{len(train_loader)} ')
 
                     # evaluate at fixed intervals
                     list_steps_val.append(step)
-                    perplexity(model, device, list_losses_val, list_ppl_val)
+                    perplexity(model, device, val_data, list_losses_val, list_ppl_val)
 
                 if step % (eval_iter * 10) == 0:  # 50 steps
                     plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 

@@ -37,20 +37,19 @@ def main(device, world_size):
 
     from utils.imports import vocab_size, learning_rate, num_chars, tokenizer
     from utils.helpers import load_val_data
-    from utils.model import load_train_objs, train
+    from utils.model import initialize_model, load_openwebtext_data, train
     torch.manual_seed(device)
 
     # instantiate model
-    model, optimizer = load_train_objs(vocab_size, device, learning_rate)
+    model, optimizer = initialize_model(vocab_size, device, learning_rate)
     model.to(device)
     model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
-    # load val_data by crawling the list of wiki pages in "dataset/val_wiki.json"
-    # val_data = load_val_data(device, world_size)
-    val_data = None
+    # load train_data and val_data 
+    train_data, val_data = load_openwebtext_data()
 
     # train loop
-    train(device, model, optimizer, val_data, world_size)
+    train(device, model, optimizer, train_data, val_data, world_size)
 
     destroy_process_group()
 
