@@ -16,9 +16,9 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, visited_urls, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, block_size, learning_rate, dropout, num_chars, encode, decode, world_size, add_gpu, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
+from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
 
-from utils.helpers import plotter, load_google_corpus
+from utils.helpers import plotter, load_google_corpus, load_openwebtext_data
 
 torch.manual_seed(1337)
 
@@ -30,12 +30,16 @@ class SingleHead(nn.Module):
         self.key = nn.Linear(d_model, d_head, bias=False)
         self.query = nn.Linear(d_model, d_head, bias=False)
         self.value = nn.Linear(d_model, d_head, bias=False)
-        """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. """
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. 
+            Here, we register_buffer self.tril so the values of the mask its gradient is not gonna be computed.
+               >  If you have parameters in your model, which should be saved and restored in the state_dict, 
+               >  but not trained by the optimizer, you should register them as buffers.
+        """
+        self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        B, T, C = x.shape  # '''(batch_size, block_size, embedding dimensions)'''
+        B, T, C = x.shape  # '''(batch_size, context_length, embedding dimensions)'''
         # idx and targets are both (B,T) tensor of integers
         k = self.key(x) # (B,T,C)
         q = self.query(x) # (B,T,C)
@@ -107,23 +111,49 @@ class Block(nn.Module):
         return x
 
 
-class PositionalEncoding(nn.Module):  #@save
-    """https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html"""
-    def __init__(self, num_hiddens, dropout, max_len=1000):
+class PositionalEncoding(nn.Module):
+    """ http://nlp.seas.harvard.edu/annotated-transformer/ """
+
+    def __init__(self, context_length, d_model, dropout):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(context_length, d_model) # (T, C)
+        position = torch.arange(0, context_length).unsqueeze(1) # (T, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-np.log(10000.0) / d_model)) # (T)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        # pe.shape = (T, C)
+        pe = pe.unsqueeze(0) # [1, T, C]
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        # x.shape: (T)
+        x = x.unsqueeze(1).unsqueeze(0) # (1, T, 1)
+        x = x + self.pe[:, :x.size(1), :].requires_grad_(False) # (1,T,C)
+        return self.dropout(x)
+
+
+class PositionalEncoding_d2l(nn.Module):  #@save
+    """ https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html """
+    def __init__(self, context_length, d_model, dropout):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         
         # Create a long enough P
-        self.P = torch.zeros((1, max_len, num_hiddens))
-        X = torch.arange(max_len, dtype=torch.float32).reshape(
-            -1, 1) / torch.pow(10000, torch.arange(
-            0, num_hiddens, 2, dtype=torch.float32) / num_hiddens)
-        self.P[:, :, 0::2] = torch.sin(X)
-        self.P[:, :, 1::2] = torch.cos(X)
+        pe = torch.zeros((1, context_length, d_model))
+        div_term = torch.pow(10000, torch.arange(0, d_model, 2, dtype=torch.float32) / d_model)
+        x = torch.arange(context_length, dtype=torch.float32).reshape(-1, 1) / div_term
+        pe[:, :, 0::2] = torch.sin(x)
+        pe[:, :, 1::2] = torch.cos(x)
+        self.register_buffer("pe", pe)
 
-    def forward(self, X):
-        X = X + self.P[:, :X.shape[1], :].to(X.device)
-        return self.dropout(X)
+    def forward(self, x):
+        # x.shape: (T)
+        x = x.unsqueeze(1).unsqueeze(0) # (1, T, 1)
+        x = x + self.pe[:, :x.size(1), :].requires_grad_(False) # :x.size(1) is for when context_length < T during generate_text
+        return self.dropout(x)
 
 
 class DecoderModel(nn.Module):
@@ -131,7 +161,9 @@ class DecoderModel(nn.Module):
         super().__init__()
         # each token directly reads the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, d_model)
-        self.position_embedding_table = nn.Embedding(block_size, d_model)
+        # self.position_embedding_table = nn.Embedding(context_length, d_model) # (T,C)
+        self.position_embedding_table = PositionalEncoding_d2l(context_length, d_model, dropout)  # (1,T,C)
+        
         self.blocks = nn.Sequential(*[Block(d_model, n_heads) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(d_model) # final layer norm
         self.lm_head = nn.Linear(d_model, vocab_size)
@@ -143,14 +175,14 @@ class DecoderModel(nn.Module):
         self.print_hyperparams_to_stdout()
 
     def forward(self, idx, targets=None):
+        # idx and targets are both shape (B,T) tensor of integers
         B, T = idx.shape
-        # idx and targets are both (B,T) tensor of integers
-        token_embeddings = self.token_embedding_table(idx)  # (B,T,C) = (batch, time, vocab_size) = (4, 8, 65)
-        position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (T,C)
+        token_embeddings = self.token_embedding_table(idx)  # (B,T,C) = (batch, time, vocab_size)
+        position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (1,T,C)-PositionalEncoding, or (T,C)-Embedding
         x = token_embeddings + position_embeddings # (B,T,C)
         x = self.blocks(x) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
-
+        
         if targets is None:
             loss = None
         else:
@@ -184,9 +216,9 @@ class DecoderModel(nn.Module):
 
             self.num_params = num_params
             self.footprint = num_params * next(self.parameters()).element_size()
-            table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'block_size', 'batch_size', 
+            table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'context_length', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
-            table.add_row([d_model, n_layers, n_heads, d_head, block_size, 
+            table.add_row([d_model, n_layers, n_heads, d_head, context_length, 
                            f'{batch_size}\n{batch_size_gpu}/GPU', max_acc_batch_size, f'{learning_rate:.0e}'])
 
             self.table = table
@@ -199,19 +231,19 @@ class DecoderModel(nn.Module):
 
 
 class MyDataset(torch.utils.data.Dataset):
-    def __init__(self, data, block_size):
-        if len(data) % block_size == 0:
+    def __init__(self, data, context_length):
+        if len(data) % context_length == 0:
             #  If no target token left for the last batch. 
-            print(f'\n===> MyDataset: len(data) % block_size == 0')
+            print(f'\n===> MyDataset: len(data) % context_length == 0')
             data = torch.cat(( data, torch.tensor(encode('.'), dtype=torch.long) ))
 
-        total_batches = len(data) // block_size
+        total_batches = len(data) // context_length
 
-        data2 = data[:total_batches * block_size]
-        data2 = data2.view(total_batches, block_size)
+        data2 = data[:total_batches * context_length]
+        data2 = data2.view(total_batches, context_length)
 
-        targets = data[1:total_batches*block_size+1]
-        targets2 = targets.view(total_batches, block_size)
+        targets = data[1:total_batches*context_length+1]
+        targets2 = targets.view(total_batches, context_length)
 
         self.data = data2
         self.targets = targets2
@@ -224,50 +256,55 @@ class MyDataset(torch.utils.data.Dataset):
 
 
 @torch.no_grad()
-def perplexity(model, device, val_data, list_losses_val, list_ppl_val):
-    # idx is (B, T) array of indices in the current context
-
+def perplexity(model, device, data, list_losses_val, list_ppl_val):
     s0 = time.time()
-    #data = torch.load('dataset/news_tensors/news-commentary-v6.en_000.pt').to(torch.long) 
-    val_data = (torch.from_numpy(val_data.astype(np.int64))).type(torch.long)
-
-    mytestset = MyDataset(val_data, block_size=block_size)
-    test_loader = torch.utils.data.DataLoader(dataset=mytestset,
-                                              batch_size=batch_size,
-                                              shuffle=False,
-                                              sampler=DistributedSampler(mytestset))
-
-    for i, (xb, yb) in enumerate(test_loader):
-        logits, loss = model(xb, yb) # evaluate the loss
-        if i == 0:
-            ppl = torch.exp(loss)
-        else:
-            ppl = (ppl*i + torch.exp(loss)) / (i+1)
-        if i == 10 or i == len(test_loader) - 2:
-            break
-
-    torch.distributed.all_reduce(ppl)
-    torch.distributed.all_reduce(loss)
-    ppl /= world_size
-    loss /= world_size
-    ppl = ppl.detach().to('cpu')
-    loss = loss.detach().to('cpu')
+    model.eval()
     
-    if device == 0:
-        print(f'=> Testset ppl:{ppl:.2f} -- loss:{loss:.2f} -- {print_runtime(s0, False)}')
-        
-    list_losses_val.append(loss)
+    ctr = ppl = loss_avgd = 0
+    for q in range(min(4, len(data) // max_acc_batch_size)):
+        q0 = q * max_acc_batch_size
+        q1 = (q+1) * max_acc_batch_size + 1
+        data_step = torch.from_numpy(data[q0:q1].astype(np.int64))
+        mytestset = MyDataset(data_step, context_length=context_length)
+        test_loader = torch.utils.data.DataLoader(dataset=mytestset,
+                                                  batch_size=(num_chunked_batches*batch_size),
+                                                  shuffle=False,
+                                                  sampler=DistributedSampler(mytestset))
+
+        for batch_no, (xb_big, yb_big) in enumerate(test_loader):
+
+            for i in range(num_chunked_batches):
+                xb = xb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]  # each device ==> (4, 512) 
+                yb = yb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]
+
+                logits, loss = model(xb, yb) # evaluate the loss
+                ctr += 1
+                ppl += torch.exp(loss)
+                loss_avgd += loss
+
+    ppl /= ctr
+    loss_avgd /= ctr
+    torch.distributed.all_reduce(ppl)
+    torch.distributed.all_reduce(loss_avgd)
+    ppl /= world_size
+    loss_avgd /= world_size
+    ppl = ppl.detach().to('cpu')
+    loss_avgd = loss_avgd.detach().to('cpu')
+
+    if is_main_process():
+        print(f'=> Testset ppl:{ppl:.2f} -- loss:{loss_avgd:.2f}  ctr:{ctr} q:{q}-- {print_runtime(s0, False)}')
+
+    list_losses_val.append(loss_avgd)
     list_ppl_val.append(ppl)
-    return ppl, loss
 
 
 def generate_text(model, device, step=None, ppl=None):
-    if device != 0:
+    if not is_main_process():
         return
-    
+
     model.eval()
     s0 = time.time()
-    seed_text = 'Some people are afraid to take that first step to start a business. '    
+    seed_text = 'Scientists recently discovered that the tap water in our homes can be'    
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
@@ -280,12 +317,11 @@ def generate_text(model, device, step=None, ppl=None):
 @torch.no_grad()
 def generate_tokens(model, device, idx, temperature=.5, max_new_tokens=200):
     # idx is (B, T) array of indices in the current context
-    print(f'temperature: {temperature}')
     
     for _ in range(max_new_tokens):
         # get prediction 
-        # crop idx to the last block_size tokens
-        logits, _ = model(idx[:, -block_size:]) # logits.shape: (1, T, n_vocab) 
+        # crop idx to the last context_length tokens
+        logits, _ = model(idx[:, -context_length:]) # logits.shape: (1, T, n_vocab) 
 
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
@@ -313,10 +349,9 @@ class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
         Stays constant at 0.1 after x1 steps.
     """
 
-    def __init__(self, optimizer, num_tokens, x0, x1, last_epoch=-1):
-        self.num_tokens = num_tokens
-        self.x0 = x0 
-        self.x1 = x1 
+    def __init__(self, optimizer, x0, x1, last_epoch=-1):
+        self.x0 = x0 / max_acc_batch_size
+        self.x1 = x1 / max_acc_batch_size
         super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
@@ -343,13 +378,14 @@ class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
         Stays constant at 0.1 after x1 steps.
     """
 
-    def __init__(self, optimizer, num_tokens, x0, x1, last_epoch=-1):
-        self.x0 = x0 
-        self.x1 = x1 
+    def __init__(self, optimizer, x0, x1, last_epoch=-1):
+        self.x0 = x0 / max_acc_batch_size
+        self.x1 = x1 / max_acc_batch_size
         super(WarmupHyperbolicDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
-        # .step() invokes this function through LambdaLR
+        # .step() invokes this function through LambdaLR. 
+        # Each invokation of .step() increments self._step_count by 1.
         if x < self.x0:
             # linear warm up stage
             y = .9 * x / max(1, self.x0) + 0.1 
@@ -365,21 +401,6 @@ class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
         return y
 
 
-# def get_batch_size(batch_size, device, step, x, x0):
-#         Call it like this. 
-#         dynamic_batch_size = get_batch_size(batch_size, device, step, num_tokens, x1//20)
-#     """
-#     if x < x0:
-#         c = 0.10
-#         m = (1 - c) / x0 
-#         y = m * x + c
-#     else:
-#         y = 1
-#     if device == 0:
-#         print(f'get_batch_size:{device} step =', step, '  x =', x, '  x0 =', x0,  '  y=', y)
-#     return int(y * batch_size)
-
-
 def initialize_model(vocab_size, device, learning_rate):
     # instantiate model
     model = DecoderModel(vocab_size, device)
@@ -391,20 +412,6 @@ def initialize_model(vocab_size, device, learning_rate):
     
     optimizer.zero_grad(set_to_none=False)
     return model, optimizer
-
-
-def get_batch(val_data, block_size, batch_size, device):
-    print('D.', len(val_data) , block_size)
-    assert len(val_data) >= block_size
-    ix = torch.randint(0, len(val_data) - block_size, (batch_size,))
-
-    xb = torch.stack([val_data[i:i+block_size] for i in ix])
-    yb = torch.stack([val_data[i+1:i+block_size+1] for i in ix])
-
-    xb = xb.to(device)
-    yb = yb.to(device)
-
-    return xb, yb
 
 
 @torch.no_grad()  # prevent allocation of gradient nodes by telling torch we're never gonna call .backward()
@@ -457,20 +464,15 @@ def is_main_process():
     return get_rank() == 0
 
 
-def save_on_master(*args, **kwargs):
-    if is_main_process():
-        torch.save(*args, **kwargs)
-
-
 def save_ddp_model(model, device, step, dname='models'):
-    torch.distributed.barrier()
-    PATH = f'{dname}/chkpt_{step:05d}.pt'
-    model.eval()
     s0 = time.time() 
 
-    if device == 0:
+    PATH = f'{dname}/chkpt_{step:05d}.pt'
+    model.eval()
+
+    if is_main_process():
         torch.save(model.state_dict(), PATH)
-        print(f'Saved model "{PATH}"  {print_runtime(s0, False)}')
+        print(f'Saved model to {PATH}  {print_runtime(s0, False)}')
     torch.distributed.barrier()
     return
 
@@ -478,6 +480,31 @@ def save_ddp_model(model, device, step, dname='models'):
 def load_model(model, PATH):
     model.load_state_dict(torch.load(PATH))
     model.eval()
+
+
+def save_ckpt(device, ddp_model, optimizer, PATH, dname='models'):
+    s0 = time.time() 
+
+    PATH = f'{dname}/chkpt_{step:05d}.pt'
+    model.eval()
+
+    if is_main_process():
+        s0 = time.time() 
+        state = {'model': ddp_model.module.state_dict(),
+                 'optimizer': optimizer.state_dict(),
+                }
+        torch.save(state, PATH)
+        print(f'Saved model to {PATH}  {print_runtime(s0, False)}')
+    torch.distributed.barrier()
+
+        
+def load_ckpt(model, optimizer, PATH):
+    # loads to
+    checkpoint = torch.load(PATH, map_location=torch.device('cpu'))
+    model.load_state_dict(checkpoint['model'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    model = DDP(model, device_ids=[gpu], find_unused_parameters=True)
+    return model
 
 
 def load_ddp_model_to_single_device(model, PATH):
@@ -491,39 +518,27 @@ def load_ddp_model_to_single_device(model, PATH):
         name = key[7:] # remove `module.`
         new_state_dict[name] = value
 
-    # Here, Model should be a model.DecoderModel object as desired
+    # Here, model should be a model.DecoderModel object 
     model.load_state_dict(new_state_dict)
-
-
-def get_batch(data, block_size, batch_size, device):
-    ix = torch.randint(len(train_data) - block_size, (batch_size,))
-    xb = torch.stack([data[i:i+block_size] for i in ix])
-    yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
-
-    xb = xb.to(device)
-    yb = yb.to(device)
-
-    return xb, yb
-
-
-def load_openwebtext_data():
-    s0 = time.time()
-    data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
-    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-
-    return train_data, val_data
 
 
 def train(device, model, optimizer, train_data, val_data, world_size):
     start = time.time()
+
+    if is_main_process():
+        print(f'batch_size: {batch_size}')
+        print(f'context_length: {context_length}')
+        print(f'batch_jump: {batch_jump}')
+        print(f'max_acc_batch_size: {max_acc_batch_size}')
+        print(f'num_chunked_batches: {num_chunked_batches}')
+
     list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs = [[] for _ in range(6)]
     list_ppl_val = []
     step = 0
     sample_no = 0
     num_tokens = 0
     list_steps, list_steps_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], []
-    lr_scheduler = WarmupHyperbolicDecay(optimizer, num_tokens, x0=x0, x1=x1)
+    lr_scheduler = WarmupHyperbolicDecay(optimizer, x0=x0, x1=x1)
 
     list_steps_val.append(step)
     perplexity(model, device, val_data, list_losses_val, list_ppl_val)
@@ -531,17 +546,17 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
     # train-loop
     for epoch in range(1,100):
-        torch.distributed.barrier()
         if is_main_process(): 
             print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
+            print(f'shaved number of tokens in train_data: {n -  (n // max_acc_batch_size)* max_acc_batch_size}', end='')
             print(f'{((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
 
-        for q in range(n // (max_acc_batch_size)):
+        for q in range(n // max_acc_batch_size):
             q0 = q * max_acc_batch_size
             q1 = (q+1) * max_acc_batch_size + 1
             data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
-            
-            mytrainset = MyDataset(data_step, block_size=block_size)
+
+            mytrainset = MyDataset(data_step, context_length=context_length)
             train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
                                                        batch_size=(num_chunked_batches*batch_size),
                                                        shuffle=False,
@@ -556,8 +571,8 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                 for i in range(num_chunked_batches):
                     xb = xb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]  # each device ==> (4, 512) 
                     yb = yb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]
-                    num_tokens += len(xb) * block_size * world_size
-                    total_size += len(xb) * block_size * world_size
+                    num_tokens += len(xb) * context_length * world_size
+                    total_size += len(xb) * context_length * world_size
                     if is_main_process():
                         print('.', end='')
 
@@ -573,7 +588,7 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                 step += 1
                 optimizer.step() # Updates the weights:  w = w - grad * lr
                 optimizer.zero_grad(set_to_none=False)
-                lr_scheduler.step(num_tokens)
+                lr_scheduler.step()
                 list_lr.append(optimizer.param_groups[-1]['lr'])
                 torch.distributed.all_reduce(loss)
                 loss /= world_size
@@ -603,6 +618,7 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
 
 
+        
         
         
         

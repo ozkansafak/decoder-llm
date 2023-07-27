@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4,5,6,7"
 
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata 
 from collections import Counter
@@ -56,10 +56,10 @@ def main(device, world_size):
 
 if __name__ == '__main__':
     import argparse, time
-    from utils.imports import world_size, tokenizer, batch_jump
+    from utils.imports import world_size, tokenizer
     os.system('/data/home/osafak/.my_gpu_kill.sh')
     time.sleep(.3)
-    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}\nbatch_jump:{batch_jump}")
+    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}")
 
     parser = argparse.ArgumentParser(description='simple distributed training job')
     args = parser.parse_args()

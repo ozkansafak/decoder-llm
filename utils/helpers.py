@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, vocab, visited_urls, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls_pt
+from utils.imports import print_runtime, vocab, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls_pt
 
 
 def load_val_data(device, world_size):
@@ -74,6 +74,15 @@ def load_google_corpus(device, idx_file):
     return data, idx_file + 1
 
 
+def load_openwebtext_data():
+    s0 = time.time()
+    data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
+    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+
+    return train_data, val_data
+
+
 def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
             list_losses_val, list_secs, start, savefig=True):
     """ list_secs:  Wall time for accrued single batch  
@@ -107,7 +116,7 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax10.set_xlim(0)
     ax10.set_ylim(min(3, min(list_losses)-0.1), 11)
     
-    ax11.plot(list_steps, list_lr, 'k.', alpha=.5, label='learning_rate')
+    ax11.plot(list_steps, list_lr, 'k', alpha=.5, label='learning_rate')
     ax11.set_xlim(0)
     ax11.set_ylim(0)
 
@@ -131,51 +140,6 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
         plt.show()
 
     plt.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

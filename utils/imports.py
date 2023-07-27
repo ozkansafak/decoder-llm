@@ -2,21 +2,19 @@
 n_layers = 12
 d_model = 512
 n_heads = 8
-block_size = 256 # (T) # maximum context length for predictions.
-batch_size_gpu = 12  # (B) # total number of batches loaded by each GPU
+context_length = 256 # (T) # maximum context length for predictions.
+batch_size_gpu = 70  # (B) # total number of batches loaded by each GPU
 learning_rate = 6e-4
 x0 = 0.375e9 # num_tokens at end of Linear warm up
 x1 = 3e9  # num_tokens at end of Cosine Annealing or Hyperbolic Decay
 
-max_acc_batch_size = int(0.52e6)
+max_acc_batch_size = int(0.51e6)
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 tokenizer = 'gpt2'
 eval_iter = 5
 # --------------------------------------
 
 num_chars = 0 
-visited_urls = dict()
-add_gpu = int(5e6) # number of tokens to be crawled 
 d_head = int(d_model / n_heads)
 
 assert d_model / n_heads % 1 == 0
@@ -48,15 +46,15 @@ vocab = set(str_vocab)
 
 assert tokenizer in ['gpt2', 'character']
 
-world_size = torch.cuda.device_count()
-batch_size = batch_size_gpu * world_size
+world_size = torch.cuda.device_count()  # 7
+batch_size = batch_size_gpu * world_size  # 42
 if batch_size % world_size > 0:
     print(f'===> batch_size not a multiple of world_size: (batch_size % world_size = {batch_size % world_size}) '+
           f'batch_size will be clipped to {(batch_size // world_size) * world_size}')
     batch_size = (batch_size // world_size) * world_size
 
 # this is batch_size (B) per gpu.
-batch_jump = (block_size * batch_size)  # number of tokens ingested in each batch
+batch_jump = (context_length * batch_size)  # number of tokens ingested in each batch
 max_acc_batch_size = (max_acc_batch_size // batch_jump) * batch_jump  
 num_chunked_batches = int(max_acc_batch_size / batch_jump) # number of loss.backward() made before doing an optim.step()
 
@@ -111,8 +109,9 @@ def count_parameters(model):
 
 with open('dataset/scraped_urls.json', 'r') as f:
     # len(scraped_urls) = 2450704
-    scraped_urls = json.load(f)
-    random.shuffle(scraped_urls)
+    scraped_urls = {}
+#     scraped_urls = json.load(f)
+#     random.shuffle(scraped_urls)
     
 if tokenizer == 'gpt2':
     encFunc = ENCODING_CONSTRUCTORS['gpt2']
