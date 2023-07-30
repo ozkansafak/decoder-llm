@@ -113,20 +113,17 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min(list_losses_val):.2f}')
     ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min(list_losses):.2f}')
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
-    ax10.set_xlim(0)
     ax10.set_ylim(min(3, min(list_losses)-0.1), 11)
     
     ax11.plot(list_steps, list_lr, 'k', alpha=.5, label='learning_rate')
-    ax11.set_xlim(0)
     ax11.set_ylim(0)
 
     ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='Wall time per step')
     ax20.set_ylabel('sec')
-    ax20.set_xlim(0)
 
     ax21.semilogy(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'PPL val\n{min(list_ppl_val):.2f}')
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]
-    [ax.legend() for ax in [ax10, ax11, ax20, ax21]]
+    [(ax.legend(), ax.set_xlim(0)) for ax in [ax10, ax11, ax20, ax21]]
     
     if savefig:
         pst = pytz.timezone('US/Pacific')

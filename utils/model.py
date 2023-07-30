@@ -31,22 +31,29 @@ class SingleHead(nn.Module):
         self.query = nn.Linear(d_model, d_head, bias=False)
         self.value = nn.Linear(d_model, d_head, bias=False)
         """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. 
-            Here, we register_buffer self.tril so the values of the mask its gradient is not gonna be computed.
+            Here, we register_buffer self.tril so the gradients of the values of the mask won't be computed.
                >  If you have parameters in your model, which should be saved and restored in the state_dict, 
                >  but not trained by the optimizer, you should register them as buffers.
         """
         self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
+        self.register_buffer('eot_mask', torch.tril(torch.ones(context_length, context_length)))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        B, T, C = x.shape  # '''(batch_size, context_length, embedding dimensions)'''
+    def forward(self, x, inputs):
+        B, T, C = x.shape  # '''(batch_size, context_length, embedding dimension)'''
+        eot = 50256 # end of token index for in OpenWebText dataset and gpt2 tokenizer
+        idx = (inputs == eot).nonzero(as_tuple=True)
+        eot_mask = self.eot_mask.repeat(B,1,1)
+        for b, t in zip(*idx): # T
+            eot_mask[b, t:, :t] = 0
+            
         # idx and targets are both (B,T) tensor of integers
         k = self.key(x) # (B,T,C)
         q = self.query(x) # (B,T,C)
 
         # Computer attention scores ("affinities")
-        wei = q @ k.transpose(-2, -1) / np.sqrt(C)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B,T,T)
+        wei = q @ k.transpose(-2, -1) / np.sqrt(C)  # (B, T, T)
+        wei = wei.masked_fill(eot_mask[:B, :T, :T] == 0, float('-inf'))  # (B,T,T)
         wei = F.softmax(wei, dim=-1) # (B,T,T)
         wei = self.dropout(wei)  # randomly prevent nodes from communicating
 
@@ -68,9 +75,9 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(d_model, d_model) 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, inputs):
         # concatenate over the channel dimension, then pass it through a linear layer to project.
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x, inputs) for h in self.heads], dim=-1)
         out = self.proj(out)
         out = self.dropout(out)
         return out
@@ -102,67 +109,24 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
 
-    def forward(self, x):
-        # residual connections are a wonderful invention of modern science. Fork off and come back. 
+    def forward(self, ins):
+        x, inputs = ins
+        
+        # Residual connections are a wonderful invention. Fork off and come back. 
         x = self.ln1(x)
-        x = x + self.self_attention(x)
+        x = x + self.self_attention(x, inputs)
         x = self.ln2(x)
         x = x + self.ffwd(x)
-        return x
-
-
-class PositionalEncoding(nn.Module):
-    """ http://nlp.seas.harvard.edu/annotated-transformer/ """
-
-    def __init__(self, context_length, d_model, dropout):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        # Compute the positional encodings once in log space.
-        pe = torch.zeros(context_length, d_model) # (T, C)
-        position = torch.arange(0, context_length).unsqueeze(1) # (T, 1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-np.log(10000.0) / d_model)) # (T)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        # pe.shape = (T, C)
-        pe = pe.unsqueeze(0) # [1, T, C]
-        self.register_buffer("pe", pe)
-
-    def forward(self, x):
-        # x.shape: (T)
-        x = x.unsqueeze(1).unsqueeze(0) # (1, T, 1)
-        x = x + self.pe[:, :x.size(1), :].requires_grad_(False) # (1,T,C)
-        return self.dropout(x)
-
-
-class PositionalEncoding_d2l(nn.Module):  #@save
-    """ https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html """
-    def __init__(self, context_length, d_model, dropout):
-        super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        
-        # Create a long enough P
-        pe = torch.zeros((1, context_length, d_model))
-        div_term = torch.pow(10000, torch.arange(0, d_model, 2, dtype=torch.float32) / d_model)
-        x = torch.arange(context_length, dtype=torch.float32).reshape(-1, 1) / div_term
-        pe[:, :, 0::2] = torch.sin(x)
-        pe[:, :, 1::2] = torch.cos(x)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x):
-        # x.shape: (T)
-        x = x.unsqueeze(1).unsqueeze(0) # (1, T, 1)
-        x = x + self.pe[:, :x.size(1), :].requires_grad_(False) # :x.size(1) is for when context_length < T during generate_text
-        return self.dropout(x)
+        return (x, inputs)
 
 
 class DecoderModel(nn.Module):
     def __init__(self, vocab_size, device):
         super().__init__()
+        # super(PositionalEncoding, self).__init__()
         # each token directly reads the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, d_model)
-        # self.position_embedding_table = nn.Embedding(context_length, d_model) # (T,C)
-        self.position_embedding_table = PositionalEncoding_d2l(context_length, d_model, dropout)  # (1,T,C)
+        self.position_embedding_table = PositionalEncoding(context_length, d_model, dropout)  # (1,T,C)
         
         self.blocks = nn.Sequential(*[Block(d_model, n_heads) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(d_model) # final layer norm
@@ -174,13 +138,13 @@ class DecoderModel(nn.Module):
         self.specs = None
         self.print_hyperparams_to_stdout()
 
-    def forward(self, idx, targets=None):
-        # idx and targets are both shape (B,T) tensor of integers
-        B, T = idx.shape
-        token_embeddings = self.token_embedding_table(idx)  # (B,T,C) = (batch, time, vocab_size)
-        position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (1,T,C)-PositionalEncoding, or (T,C)-Embedding
+    def forward(self, inputs, targets=None):
+        # inputs and targets are both shape (B,T) tensor of integers
+        B, T = inputs.shape
+        token_embeddings = self.token_embedding_table(inputs)  # (B,T,C) = (batch, time, vocab_size)
+        position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (1,T,C)-PositionalEncoding
         x = token_embeddings + position_embeddings # (B,T,C)
-        x = self.blocks(x) # (B,T,C)
+        x, _ = self.blocks((x, inputs)) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
         
         if targets is None:
@@ -228,6 +192,27 @@ class DecoderModel(nn.Module):
             print(table)
 
         return num_params
+
+
+class PositionalEncoding(nn.Module):  #@save
+    """ Ref: https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html """
+    def __init__(self, context_length, d_model, dropout):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        
+        # Create a long enough P
+        pe = torch.zeros((1, context_length, d_model))
+        div_term = torch.pow(10000, torch.arange(0, d_model, 2, dtype=torch.float32) / d_model)
+        x = torch.arange(context_length, dtype=torch.float32).reshape(-1, 1) / div_term
+        pe[:, :, 0::2] = torch.sin(x)
+        pe[:, :, 1::2] = torch.cos(x)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        # x.shape: (T)
+        x = x.unsqueeze(1).unsqueeze(0) # (1, T, 1)
+        x = x + self.pe[:, :x.size(1), :].requires_grad_(False) # :x.size(1) is for when context_length < T 
+        return self.dropout(x)
 
 
 class MyDataset(torch.utils.data.Dataset):
@@ -292,7 +277,7 @@ def perplexity(model, device, data, list_losses_val, list_ppl_val):
     loss_avgd = loss_avgd.detach().to('cpu')
 
     if is_main_process():
-        print(f'=> Testset ppl:{ppl:.2f} -- loss:{loss_avgd:.2f}  ctr:{ctr} q:{q}-- {print_runtime(s0, False)}')
+        print(f'=> Testset ppl:{ppl:.2f} -- loss:{loss_avgd:.2f}  ctr:{ctr} q:{q} -- {print_runtime(s0, False)}')
 
     list_losses_val.append(loss_avgd)
     list_ppl_val.append(ppl)
@@ -308,8 +293,9 @@ def generate_text(model, device, step=None, ppl=None):
     seed_tokens = torch.as_tensor(encode(seed_text), device=device, dtype=torch.long).view(1,-1)
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
-    print(f'\n===> generate_text(): step:{step} -- ppl:{ppl:.2f} -- {print_runtime(s0, False)}')
-    print(output)
+    print(f'\n===> In generate_text(): step:{step} -- ppl:{ppl:.2f} -- {print_runtime(s0, False)}')
+    print(f'seed_text:{seed_text}')
+    print(f'mygpt:{output}')
     print('---' *30 + '\n')
     model.train()
 
@@ -325,19 +311,18 @@ def generate_tokens(model, device, idx, temperature=.5, max_new_tokens=200):
 
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
+        
+        # temperature scaling
+        logits = logits / temperature  
 
-        # apply softmax to get probabilities
+        # get softmax probabilities
         probs = F.softmax(logits, dim=-1) # (B, C)
 
         # sample from the distribution
-        if temperature == 0:
-            idx_next = torch.argmax(probs)
-            idx_next = torch.tensor([[idx_next]], device=device)
-        else:
-            idx_next = torch.multinomial(probs / temperature, num_samples=1) # (B, 1)
-
+        idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+        
         # append sampled index to the running sequence
-        idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        idx = torch.cat((idx, idx_next), dim=1) # idx:(1, T+1), idx_next:(1, 1)
 
     return idx[0]
 
@@ -414,23 +399,6 @@ def initialize_model(vocab_size, device, learning_rate):
     return model, optimizer
 
 
-@torch.no_grad()  # prevent allocation of gradient nodes by telling torch we're never gonna call .backward()
-def estimate_loss(model, val_loader, device):
-    s0 = time.time()
-    
-    model.eval()
-    val_loss = []
-    for batch_no, (xb, yb) in enumerate(val_loader):
-        xb, yb = xb.to(device), yb.to(device)
-        logits, iloss = model(xb, yb) # evaluate the loss, logits shape = (B*T/world_size, vocab_size)
-        iloss = iloss.mean() # take average across all available GPUs
-        val_loss.append(iloss.item())
-        
-    model.train()
-
-    return sum(val_loss) / len(val_loss)
-
-
 def load_shakespeare(num_chars=0, filename='dataset/tiny_shakespeare.txt'):
     """ 338,025 tokens
     """
@@ -473,6 +441,7 @@ def save_ddp_model(model, device, step, dname='models'):
     if is_main_process():
         torch.save(model.state_dict(), PATH)
         print(f'Saved model to {PATH}  {print_runtime(s0, False)}')
+        
     torch.distributed.barrier()
     return
 
@@ -618,26 +587,6 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
 
 
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
         
         
         
