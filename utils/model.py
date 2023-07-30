@@ -35,25 +35,19 @@ class SingleHead(nn.Module):
                >  If you have parameters in your model, which should be saved and restored in the state_dict, 
                >  but not trained by the optimizer, you should register them as buffers.
         """
-        self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
-        self.register_buffer('eot_mask', torch.tril(torch.ones(context_length, context_length)))
+        #self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
+        #self.register_buffer('eos_mask', torch.tril(torch.ones(context_length, context_length)))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, inputs):
+    def forward(self, x, eos_mask):
         B, T, C = x.shape  # '''(batch_size, context_length, embedding dimension)'''
-        eot = 50256 # end of token index for in OpenWebText dataset and gpt2 tokenizer
-        idx = (inputs == eot).nonzero(as_tuple=True)
-        eot_mask = self.eot_mask.repeat(B,1,1)
-        for b, t in zip(*idx): # T
-            eot_mask[b, t:, :t] = 0
-            
         # idx and targets are both (B,T) tensor of integers
         k = self.key(x) # (B,T,C)
         q = self.query(x) # (B,T,C)
 
         # Computer attention scores ("affinities")
         wei = q @ k.transpose(-2, -1) / np.sqrt(C)  # (B, T, T)
-        wei = wei.masked_fill(eot_mask[:B, :T, :T] == 0, float('-inf'))  # (B,T,T)
+        wei = wei.masked_fill(eos_mask[:B, :T, :T] == 0, float('-inf'))  # (B,T,T)
         wei = F.softmax(wei, dim=-1) # (B,T,T)
         wei = self.dropout(wei)  # randomly prevent nodes from communicating
 
@@ -75,9 +69,9 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(d_model, d_model) 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, inputs):
+    def forward(self, x, eos_mask):
         # concatenate over the channel dimension, then pass it through a linear layer to project.
-        out = torch.cat([h(x, inputs) for h in self.heads], dim=-1)
+        out = torch.cat([h(x, eos_mask) for h in self.heads], dim=-1)
         out = self.proj(out)
         out = self.dropout(out)
         return out
@@ -110,14 +104,14 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(d_model)
 
     def forward(self, ins):
-        x, inputs = ins
+        x, eos_mask = ins
         
         # Residual connections are a wonderful invention. Fork off and come back. 
         x = self.ln1(x)
-        x = x + self.self_attention(x, inputs)
+        x = x + self.self_attention(x, eos_mask)
         x = self.ln2(x)
         x = x + self.ffwd(x)
-        return (x, inputs)
+        return x, eos_mask
 
 
 class DecoderModel(nn.Module):
@@ -137,14 +131,24 @@ class DecoderModel(nn.Module):
         self.table = None
         self.specs = None
         self.print_hyperparams_to_stdout()
+        self.register_buffer('eos_mask_template', torch.tril(torch.ones(context_length, context_length)))
 
     def forward(self, inputs, targets=None):
         # inputs and targets are both shape (B,T) tensor of integers
         B, T = inputs.shape
+        
+        # compute the eos_mask
+        eos_token_id = 50256 # end of token index for in OpenWebText dataset and gpt2 tokenizer
+        idx = (inputs == eos_token_id).nonzero(as_tuple=True)
+        eos_mask = self.eos_mask_template.repeat(B,1,1)
+        for b, t in zip(*idx): # T
+            eos_mask[b, t:, :t] = 0
+        assert eos_mask.requires_grad == False
+        
         token_embeddings = self.token_embedding_table(inputs)  # (B,T,C) = (batch, time, vocab_size)
-        position_embeddings = self.position_embedding_table(torch.arange(T, device=self.device)) # (1,T,C)-PositionalEncoding
+        position_embeddings = self.position_embedding_table(torch.arange(T, device=inputs.device)) # (1,T,C)-PositionalEncoding
         x = token_embeddings + position_embeddings # (B,T,C)
-        x, _ = self.blocks((x, inputs)) # (B,T,C)
+        x, _ = self.blocks((x, eos_mask)) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
         
         if targets is None:
@@ -154,7 +158,7 @@ class DecoderModel(nn.Module):
             logits = logits.view(B*T, C)
             targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
-
+            
         return logits, loss
 
     def print_hyperparams_to_stdout(self):
@@ -294,8 +298,8 @@ def generate_text(model, device, step=None, ppl=None):
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
     print(f'\n===> In generate_text(): step:{step} -- ppl:{ppl:.2f} -- {print_runtime(s0, False)}')
-    print(f'seed_text:{seed_text}')
-    print(f'mygpt:{output}')
+    print(f'seed_text: {seed_text}')
+    print(f'mygpt:     {output.split(seed_text)[1]}')
     print('---' *30 + '\n')
     model.train()
 
