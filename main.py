@@ -37,12 +37,15 @@ def main(device, world_size):
 
     from utils.imports import vocab_size, learning_rate, num_chars, tokenizer
     from utils.helpers import load_val_data
-    from utils.model import initialize_model, load_openwebtext_data, train
+    from utils.model import initialize_model, load_openwebtext_data, train, load_ckpt
     torch.manual_seed(device)
 
     # instantiate model
     model, optimizer = initialize_model(vocab_size, device, learning_rate)
     model.to(device)
+    
+    # load a previous checkpoint if you have to
+    #load_ckpt(device, model, optimizer, '/data/home/osafak/code/mygpt/models/chkpt_00005.pt')
     model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
     # load train_data and val_data 

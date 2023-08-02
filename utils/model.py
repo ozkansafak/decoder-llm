@@ -36,7 +36,6 @@ class SingleHead(nn.Module):
                >  but not trained by the optimizer, you should register them as buffers.
         """
         #self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
-        #self.register_buffer('eos_mask', torch.tril(torch.ones(context_length, context_length)))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, eos_mask):
@@ -298,8 +297,8 @@ def generate_text(model, device, step=None, ppl=None):
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
     print(f'\n===> In generate_text(): step:{step} -- ppl:{ppl:.2f} -- {print_runtime(s0, False)}')
-    print(f'seed_text: {seed_text}')
-    print(f'mygpt:     {output.split(seed_text)[1]}')
+    print(f'===> seed_text: {seed_text}')
+    print(f'===>     mygpt: {output.split(seed_text)[1]}')
     print('---' *30 + '\n')
     model.train()
 
@@ -455,28 +454,28 @@ def load_model(model, PATH):
     model.eval()
 
 
-def save_ckpt(device, ddp_model, optimizer, PATH, dname='models'):
-    s0 = time.time() 
+def save_ckpt(device, model, optimizer, step):
+    s0 = time.time()
 
-    PATH = f'{dname}/chkpt_{step:05d}.pt'
+    PATH = f'models/chkpt_{step:05d}.pt'
     model.eval()
 
     if is_main_process():
         s0 = time.time() 
-        state = {'model': ddp_model.module.state_dict(),
+        state = {'model': model.module.state_dict(),
                  'optimizer': optimizer.state_dict(),
                 }
         torch.save(state, PATH)
-        print(f'Saved model to {PATH}  {print_runtime(s0, False)}')
+        print(f'Checkpoint saved at {PATH}  {print_runtime(s0, False)}') 
     torch.distributed.barrier()
 
         
-def load_ckpt(model, optimizer, PATH):
+def load_ckpt(device, model, optimizer, PATH):
     # loads to
     checkpoint = torch.load(PATH, map_location=torch.device('cpu'))
     model.load_state_dict(checkpoint['model'])
     optimizer.load_state_dict(checkpoint['optimizer'])
-    model = DDP(model, device_ids=[gpu], find_unused_parameters=True)
+    model = DDP(model, device_ids=[device], find_unused_parameters=True)
     return model
 
 
@@ -516,13 +515,13 @@ def train(device, model, optimizer, train_data, val_data, world_size):
     list_steps_val.append(step)
     perplexity(model, device, val_data, list_losses_val, list_ppl_val)
     n = len(train_data)
-
+    
     # train-loop
     for epoch in range(1,100):
         if is_main_process(): 
             print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
             print(f'shaved number of tokens in train_data: {n -  (n // max_acc_batch_size)* max_acc_batch_size}', end='')
-            print(f'{((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
+            print(f' -- {((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
 
         for q in range(n // max_acc_batch_size):
             q0 = q * max_acc_batch_size
@@ -587,7 +586,8 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
                 if step % (eval_iter * 100) == 0: # 500 steps
                     generate_text(model, device, step, ppl=list_ppl_val[-1])
-                    save_ddp_model(model, device, step)
+                    # save_ddp_model(model, device, step)
+                    save_ckpt(device, model, optimizer, step)
 
 
 
