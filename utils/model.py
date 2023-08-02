@@ -32,7 +32,7 @@ class SingleHead(nn.Module):
         self.value = nn.Linear(d_model, d_head, bias=False)
         """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. 
             Here, we register_buffer self.tril so the gradients of the values of the mask won't be computed.
-               >  If you have parameters in your model, which should be saved and restored in the state_dict, 
+               >  If you have parameters in your model, which should be saved and restored in the state_dict,
                >  but not trained by the optimizer, you should register them as buffers.
         """
         #self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
@@ -47,7 +47,7 @@ class SingleHead(nn.Module):
         # Computer attention scores ("affinities")
         wei = q @ k.transpose(-2, -1) / np.sqrt(C)  # (B, T, T)
         wei = wei.masked_fill(eos_mask[:B, :T, :T] == 0, float('-inf'))  # (B,T,T)
-        wei = F.softmax(wei, dim=-1) # (B,T,T)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)  # randomly prevent nodes from communicating
 
         # Perform weighted aggregation of the values 
@@ -244,7 +244,7 @@ class MyDataset(torch.utils.data.Dataset):
 
 
 @torch.no_grad()
-def perplexity(model, device, data, list_losses_val, list_ppl_val):
+def perplexity(model, device, data, list_steps_val, step, list_losses_val, list_ppl_val):
     s0 = time.time()
     model.eval()
     
@@ -284,6 +284,7 @@ def perplexity(model, device, data, list_losses_val, list_ppl_val):
 
     list_losses_val.append(loss_avgd)
     list_ppl_val.append(ppl)
+    list_steps_val.append(step)
 
 
 def generate_text(model, device, step=None, ppl=None):
@@ -514,16 +515,13 @@ def train(device, model, optimizer, train_data, val_data, world_size):
         print(f'max_acc_batch_size: {max_acc_batch_size}')
         print(f'num_chunked_batches: {num_chunked_batches}')
 
-    list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs = [[] for _ in range(6)]
-    list_ppl_val = []
-    step = 0
-    sample_no = 0
-    num_tokens = 0
-    list_steps, list_steps_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], []
+    (list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs, \
+                                                     list_ppl_val, list_grads) = [[] for _ in range(8)]
+    num_tokens = sample_no = step = 0
+    
     lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
 
-    list_steps_val.append(step)
-    perplexity(model, device, val_data, list_losses_val, list_ppl_val)
+    perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
     n = len(train_data)
     
     # train-loop
@@ -569,6 +567,7 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
                 step += 1
                 grad_vector1, _, _ = get_grad_vector(model)
+                lit_grads.append(grad_vector1)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip grads at 1.
                 grad_vector2, _, _ = get_grad_vector(model)
                 optimizer.step() # Updates the weights:  w = w - grad * lr
@@ -582,19 +581,13 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                 list_secs.append(time.time() - s0)
                 s0 = time.time()
                 if is_main_process():
-                    print(f'step:{step} -- loss:{list_losses[-1]:.2f}'+
+                    print(f' step:{step} -- loss:{list_losses[-1]:.2f}'+
                           f' -- grad_norm1:{torch.linalg.norm(grad_vector1):.2f}'+
                           f' -- grad_norm2:{torch.linalg.norm(grad_vector2):.2f}'+
                           f' -- {list_secs[-1]:.2f} secs')
 
                 if step % eval_iter == 0: # 5 steps
-                    if is_main_process():
-                        print(f'step:{step}   loss:{loss.item():.2f}   num_tokens:{num_tokens/1e6:.2f} million  '+
-                              f'batch_no:{batch_no:2d}/{len(train_loader)} ')
-
-                    # evaluate at fixed intervals
-                    list_steps_val.append(step)
-                    perplexity(model, device, val_data, list_losses_val, list_ppl_val)
+                    perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
 
                 if step % (eval_iter * 10) == 0:  # 50 steps
                     plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
@@ -602,7 +595,6 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
                 if step % (eval_iter * 100) == 0: # 500 steps
                     generate_text(model, device, step, ppl=list_ppl_val[-1])
-                    # save_ddp_model(model, device, step)
                     save_ckpt(device, model, optimizer, step)
 
 
