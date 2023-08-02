@@ -83,6 +83,21 @@ def load_openwebtext_data():
     return train_data, val_data
 
 
+def get_grad_vector(model):
+    list_grads = []
+    dict_grads = dict()
+    dict_weights = dict()
+    for name, param in model.named_parameters():
+        if param.requires_grad and param.grad is not None:
+            list_grads.append(param.grad.view(-1,1))
+            dict_grads[name] = param.grad
+            dict_weights[name] = param
+        else:
+            continue
+    grad_vector = torch.cat(list_grads)
+    return grad_vector, dict_grads, dict_weights
+
+
 def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
             list_losses_val, list_secs, start, savefig=True):
     """ list_secs:  Wall time for accrued single batch  
@@ -131,7 +146,7 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
         dt = datetime.datetime.now(pst) + delta
         prefix = dt.isoformat().split('.')[0]
         prefix = prefix.replace('T', ' | ')
-        plt.savefig(f'figures/loss_{prefix}.png', bbox_inches='tight')
+        plt.savefig(f'figures/loss_{step:05d}.png', bbox_inches='tight')
         print(f'Saved plot')
     else:
         plt.show()

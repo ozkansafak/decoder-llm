@@ -18,7 +18,7 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
 
-from utils.helpers import plotter, load_google_corpus, load_openwebtext_data
+from utils.helpers import plotter, load_google_corpus, load_openwebtext_data, get_grad_vector
 
 torch.manual_seed(1337)
 
@@ -250,6 +250,7 @@ def perplexity(model, device, data, list_losses_val, list_ppl_val):
     
     ctr = ppl = loss_avgd = 0
     for q in range(min(4, len(data) // max_acc_batch_size)):
+        # for OpenWebText val_data.bin there are 8 or 9 0.5M-token batches.
         q0 = q * max_acc_batch_size
         q1 = (q+1) * max_acc_batch_size + 1
         data_step = torch.from_numpy(data[q0:q1].astype(np.int64))
@@ -260,7 +261,6 @@ def perplexity(model, device, data, list_losses_val, list_ppl_val):
                                                   sampler=DistributedSampler(mytestset))
 
         for batch_no, (xb_big, yb_big) in enumerate(test_loader):
-
             for i in range(num_chunked_batches):
                 xb = xb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]  # each device ==> (4, 512) 
                 yb = yb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]
@@ -359,33 +359,43 @@ class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
         return y
 
 
-class WarmupHyperbolicDecay(torch.optim.lr_scheduler.LambdaLR):
+class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
     # https://huggingface.co/transformers/v1.2.0/_modules/pytorch_transformers/optimization.html
     """ Linearly increases learning rate from 0.1 to 1 over `x0` training steps.
-        Decreases learning rate from 1. to 0.1 over the next `x1 - x0` steps following a b/(x+a) hyperbolic curve.
+        Decreases learning rate from 1. to 0.1 over the next `x1 - x0` steps following the y = b/(x+a)**0.5  curve.
         Stays constant at 0.1 after x1 steps.
+        
+        y = b / (x + a) ** 0.5
+        y(x=x0) = 1
+        y(x=x1) = p
     """
 
-    def __init__(self, optimizer, x0, x1, last_epoch=-1):
+    def __init__(self, optimizer, x0, x1, p=0.1, last_epoch=-1):
+        # x0, and x1 are in "number of tokens"
+        # self.x0 and self.x12 are scaled to step size.
         self.x0 = x0 / max_acc_batch_size
         self.x1 = x1 / max_acc_batch_size
-        super(WarmupHyperbolicDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
+        self.p = p
+        self.a = 1 / (1 - self.p**2) * (self.p**2 * self.x1 - self.x0)
+        self.b = np.sqrt(self.x0 + self.a)
+        super(WarmupInvXDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
         # .step() invokes this function through LambdaLR. 
         # Each invokation of .step() increments self._step_count by 1.
+        
         if x < self.x0:
             # linear warm up stage
-            y = .9 * x / max(1, self.x0) + 0.1 
-        elif self.x0 <= x < self.x1:
-            # hyperbolic decay stage
-            b = 9 / (self.x1 - self.x0)
-            a = (self.x0 * (1 - b)) / b 
-            y = 1 / (b * (x + a) - self.x0 + 1) 
+            y = .9 * (x / self.x0) + 0.1
+            
+        elif self.x0 <= x <= self.x1:
+            # inverse decay stage
+            y = self.b / (x + self.a) ** 0.5
+            
         elif self.x1 <= x:
-            # constant 10% of max learning_rate
-            y = .1
-
+            # constant stage
+            y = self.p
+            
         return y
 
 
@@ -474,9 +484,9 @@ def load_ckpt(device, model, optimizer, PATH):
     # loads to
     checkpoint = torch.load(PATH, map_location=torch.device('cpu'))
     model.load_state_dict(checkpoint['model'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
+    if optimizer:
+        optimizer.load_state_dict(checkpoint['optimizer'])
     model = DDP(model, device_ids=[device], find_unused_parameters=True)
-    return model
 
 
 def load_ddp_model_to_single_device(model, PATH):
@@ -510,20 +520,20 @@ def train(device, model, optimizer, train_data, val_data, world_size):
     sample_no = 0
     num_tokens = 0
     list_steps, list_steps_val, list_losses, list_losses_val, list_lr, list_secs = [], [], [], [], [], []
-    lr_scheduler = WarmupHyperbolicDecay(optimizer, x0=x0, x1=x1)
+    lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
 
     list_steps_val.append(step)
     perplexity(model, device, val_data, list_losses_val, list_ppl_val)
     n = len(train_data)
     
     # train-loop
-    for epoch in range(1,100):
+    for epoch in range(1,21):
         if is_main_process(): 
             print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
             print(f'shaved number of tokens in train_data: {n -  (n // max_acc_batch_size)* max_acc_batch_size}', end='')
             print(f' -- {((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
 
-        for q in range(n // max_acc_batch_size):
+        for q in range(0, n // max_acc_batch_size):
             q0 = q * max_acc_batch_size
             q1 = (q+1) * max_acc_batch_size + 1
             data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
@@ -558,6 +568,9 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                     continue
 
                 step += 1
+                grad_vector1, _, _ = get_grad_vector(model)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip grads at 1.
+                grad_vector2, _, _ = get_grad_vector(model)
                 optimizer.step() # Updates the weights:  w = w - grad * lr
                 optimizer.zero_grad(set_to_none=False)
                 lr_scheduler.step()
@@ -569,7 +582,10 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                 list_secs.append(time.time() - s0)
                 s0 = time.time()
                 if is_main_process():
-                    print(f'step:{step}, loss:{list_losses[-1]:.2f} -- {list_secs[-1]:.2f} secs')
+                    print(f'step:{step} -- loss:{list_losses[-1]:.2f}'+
+                          f' -- grad_norm1:{torch.linalg.norm(grad_vector1):.2f}'+
+                          f' -- grad_norm2:{torch.linalg.norm(grad_vector2):.2f}'+
+                          f' -- {list_secs[-1]:.2f} secs')
 
                 if step % eval_iter == 0: # 5 steps
                     if is_main_process():

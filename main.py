@@ -44,8 +44,8 @@ def main(device, world_size):
     model, optimizer = initialize_model(vocab_size, device, learning_rate)
     model.to(device)
     
-    # load a previous checkpoint if you have to
-    #load_ckpt(device, model, optimizer, '/data/home/osafak/code/mygpt/models/chkpt_00005.pt')
+    # load a previous checkpoint
+    #load_ckpt(device, model, optimizer=None, PATH='/data/home/osafak/code/mygpt/models/chkpt_01000.pt')
     model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
     # load train_data and val_data 
@@ -60,8 +60,7 @@ def main(device, world_size):
 if __name__ == '__main__':
     import argparse, time
     from utils.imports import world_size, tokenizer
-    os.system('/data/home/osafak/.my_gpu_kill.sh')
-    time.sleep(.3)
+    os.system('/data/home/osafak/.my_gpu_kill.sh'); time.sleep(.3)
     print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}")
 
     parser = argparse.ArgumentParser(description='simple distributed training job')
