@@ -141,8 +141,7 @@ class DecoderModel(nn.Module):
         idx = (inputs == eos_token_id).nonzero(as_tuple=True)
         eos_mask = self.eos_mask_template.repeat(B,1,1)
         for b, t in zip(*idx): # T
-            eos_mask[b, t:, :t] = 0
-        assert eos_mask.requires_grad == False
+            eos_mask[b, t:, :t] = 0 # this needs to be [b, t:, :(t+1)]
         
         token_embeddings = self.token_embedding_table(inputs)  # (B,T,C) = (batch, time, vocab_size)
         position_embeddings = self.position_embedding_table(torch.arange(T, device=inputs.device)) # (1,T,C)-PositionalEncoding
@@ -567,9 +566,7 @@ def train(device, model, optimizer, train_data, val_data, world_size):
 
                 step += 1
                 grad_vector1, _, _ = get_grad_vector(model)
-                lit_grads.append(grad_vector1)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip grads at 1.
-                grad_vector2, _, _ = get_grad_vector(model)
                 optimizer.step() # Updates the weights:  w = w - grad * lr
                 optimizer.zero_grad(set_to_none=False)
                 lr_scheduler.step()
@@ -583,7 +580,6 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                 if is_main_process():
                     print(f' step:{step} -- loss:{list_losses[-1]:.2f}'+
                           f' -- grad_norm1:{torch.linalg.norm(grad_vector1):.2f}'+
-                          f' -- grad_norm2:{torch.linalg.norm(grad_vector2):.2f}'+
                           f' -- {list_secs[-1]:.2f} secs')
 
                 if step % eval_iter == 0: # 5 steps

@@ -136,7 +136,9 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='Wall time per step')
     ax20.set_ylabel('sec')
 
-    ax21.semilogy(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'PPL val\n{min(list_ppl_val):.2f}')
+    ax21.plot(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'test perplexity\n{min(list_ppl_val):.2f}')
+    ax21.set_ylim(0, 90)
+
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]
     [(ax.legend(), ax.set_xlim(0)) for ax in [ax10, ax11, ax20, ax21]]
     
