@@ -45,14 +45,14 @@ def main(device, world_size):
     model.to(device)
     
     # load a previous checkpoint
-    #load_ckpt(device, model, optimizer=None, PATH='/data/home/osafak/code/mygpt/models/chkpt_01000.pt')
+    step_init = load_ckpt(device, model, optimizer=None, PATH='/data/home/osafak/code/mygpt/models/chkpt_06000.pt')
     model = DDP(model, device_ids=[device], find_unused_parameters=True) 
     
     # load train_data and val_data 
     train_data, val_data = load_openwebtext_data()
 
     # train loop
-    train(device, model, optimizer, train_data, val_data, world_size)
+    train(device, model, optimizer, train_data, val_data, world_size, step_init=2857)
 
     destroy_process_group()
 
@@ -61,8 +61,8 @@ if __name__ == '__main__':
     import argparse, time
     from utils.imports import world_size, tokenizer
     os.system('/data/home/osafak/.my_gpu_kill.sh'); time.sleep(.3)
-    print(f"tokenizer: {tokenizer}\nCUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}\nworld_size:{world_size}")
-
+    print(f"tokenizer: {tokenizer}")
+    print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
     parser = argparse.ArgumentParser(description='simple distributed training job')
     args = parser.parse_args()
 

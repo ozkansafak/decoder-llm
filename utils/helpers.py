@@ -97,6 +97,11 @@ def get_grad_vector(model):
     grad_vector = torch.cat(list_grads)
     return grad_vector, dict_grads, dict_weights
 
+def min2(ins):
+    ins = [item for item in ins if item is not None]
+    
+    return min(ins) if ins else 0
+        
 
 def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
             list_losses_val, list_secs, start, savefig=True):
@@ -125,22 +130,24 @@ def plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_
     ax00.text(0, 0.9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
     ax00.text(0, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
 
-    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min(list_losses_val):.2f}')
-    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min(list_losses):.2f}')
+    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min2(list_losses_val):.2f}')
+    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min2(list_losses):.2f}')
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
-    ax10.set_ylim(min(3, min(list_losses)-0.1), 11)
+    ax10.set_ylim(min(3, min2(list_losses)-0.1), 11)
     
-    ax11.plot(list_steps, list_lr, 'k', alpha=.5, label='learning_rate')
+    ax11.plot(list_steps, list_lr, 'k', alpha=.5)
+    ax11.set_title('learning_rate')
     ax11.set_ylim(0)
 
     ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='Wall time per step')
     ax20.set_ylabel('sec')
 
-    ax21.plot(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'test perplexity\n{min(list_ppl_val):.2f}')
+    ax21.plot(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'test perplexity\n{min2(list_ppl_val):.2f}')
     ax21.set_ylim(0, 90)
 
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]
-    [(ax.legend(), ax.set_xlim(0)) for ax in [ax10, ax11, ax20, ax21]]
+    [ax.legend() for ax in [ax10, ax20, ax21]]
+    [ax.set_xlim(0) for ax in [ax10, ax20, ax11, ax21]]
     
     if savefig:
         pst = pytz.timezone('US/Pacific')

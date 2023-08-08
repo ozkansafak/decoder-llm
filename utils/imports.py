@@ -1,14 +1,14 @@
 # Hyperparamerters
-n_layers = 12
-d_model = 512
-n_heads = 8
-context_length = 1024 # (T) # maximum context length for predictions.
-batch_size_gpu = 12  # (B) # total number of batches loaded by each GPU
-learning_rate = 6e-4
+n_layers = 16
+d_model = 1024
+n_heads = 16
+context_length = int(1024 / 4) # (T) # maximum context length for predictions.
+batch_size_gpu = int(12 * 3)  # (B) # total number of batches loaded by each GPU
+learning_rate = 3e-4
 x0 = 0.375e9 # num_tokens at end of Linear warm up
-x1 = 30e9  # num_tokens at end of Cosine Annealing or Hyperbolic Decay
+x1 = 30e9  # num_tokens at end of Cosine Annealing
 
-max_acc_batch_size = int(0.525e6)
+acc_batch_size = int(0.525e6)
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 tokenizer = 'gpt2'
 eval_iter = 5
@@ -17,7 +17,7 @@ eval_iter = 5
 num_chars = 0 
 d_head = int(d_model / n_heads)
 
-assert d_model / n_heads % 1 == 0
+assert (d_model / n_heads) % 1 == 0
 
 import os
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
@@ -55,8 +55,8 @@ if batch_size % world_size > 0:
 
 # this is batch_size (B) per gpu.
 batch_jump = (context_length * batch_size)  # number of tokens ingested in each batch
-max_acc_batch_size = (max_acc_batch_size // batch_jump) * batch_jump  
-num_chunked_batches = int(max_acc_batch_size / batch_jump) # number of loss.backward() made before doing an optim.step()
+acc_batch_size = (acc_batch_size // batch_jump) * batch_jump  
+num_chunked_batches = int(acc_batch_size / batch_jump) # number of loss.backward() made before doing an optim.step()
 
 _directory = "/data/home/osafak/code/mygpt/dataset/news_tensors"
 _PATH = f"{_directory}/*.pt"

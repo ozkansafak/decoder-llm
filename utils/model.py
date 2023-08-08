@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, max_acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
+from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
 
 from utils.helpers import plotter, load_google_corpus, load_openwebtext_data, get_grad_vector
 
@@ -92,24 +92,24 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    """ Transformer block: communication (MultiHeadAttention) followed by computation (Feed Forward Network) """
+    """ Transformer block: communication (MultiHeadAttention) followed by computation (MLP) """
 
     def __init__(self, d_model, n_heads):
         # d_model: embedding dimension, n_heads: the number of heads we'd like
         super().__init__() 
         self.self_attention = MultiHeadAttention(n_heads)
-        self.ffwd = MLP(d_model)
+        self.mlp = MLP(d_model)
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
 
     def forward(self, ins):
         x, eos_mask = ins
-        
-        # Residual connections are a wonderful invention. Fork off and come back. 
+
+        # Residual connections, yay! Fork off, apply a function and join with the main stream with an addition. 
         x = self.ln1(x)
-        x = x + self.self_attention(x, eos_mask)
+        x = x + self.self_attention((x), eos_mask)
         x = self.ln2(x)
-        x = x + self.ffwd(x)
+        x = x + self.mlp((x))
         return x, eos_mask
 
 
@@ -185,7 +185,7 @@ class DecoderModel(nn.Module):
             table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'context_length', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
             table.add_row([d_model, n_layers, n_heads, d_head, context_length, 
-                           f'{batch_size}\n{batch_size_gpu}/GPU', max_acc_batch_size, f'{learning_rate:.0e}'])
+                           f'{batch_size}\n{batch_size_gpu}/GPU', acc_batch_size, f'{learning_rate:.0e}'])
 
             self.table = table
             self.specs = str_num_params +\
@@ -248,10 +248,10 @@ def perplexity(model, device, data, list_steps_val, step, list_losses_val, list_
     model.eval()
     
     ctr = ppl = loss_avgd = 0
-    for q in range(min(4, len(data) // max_acc_batch_size)):
+    for q in range(min(4, len(data) // acc_batch_size)):
         # for OpenWebText val_data.bin there are 8 or 9 0.5M-token batches.
-        q0 = q * max_acc_batch_size
-        q1 = (q+1) * max_acc_batch_size + 1
+        q0 = q * acc_batch_size
+        q1 = (q+1) * acc_batch_size + 1
         data_step = torch.from_numpy(data[q0:q1].astype(np.int64))
         mytestset = MyDataset(data_step, context_length=context_length)
         test_loader = torch.utils.data.DataLoader(dataset=mytestset,
@@ -279,7 +279,7 @@ def perplexity(model, device, data, list_steps_val, step, list_losses_val, list_
     loss_avgd = loss_avgd.detach().to('cpu')
 
     if is_main_process():
-        print(f'=> Testset ppl:{ppl:.2f} -- loss:{loss_avgd:.2f}  ctr:{ctr} q:{q} -- {print_runtime(s0, False)}')
+        print(f'=> Testset step:{step} -- ppl:{ppl:.2f} -- loss:{loss_avgd:.2f}  ctr:{ctr} q:{q} -- {print_runtime(s0, False)}')
 
     list_losses_val.append(loss_avgd)
     list_ppl_val.append(ppl)
@@ -338,8 +338,8 @@ class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
     """
 
     def __init__(self, optimizer, x0, x1, last_epoch=-1):
-        self.x0 = x0 / max_acc_batch_size
-        self.x1 = x1 / max_acc_batch_size
+        self.x0 = x0 / acc_batch_size
+        self.x1 = x1 / acc_batch_size
         super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x):
@@ -373,8 +373,8 @@ class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
     def __init__(self, optimizer, x0, x1, p=0.1, last_epoch=-1):
         # x0, and x1 are in "number of tokens"
         # self.x0 and self.x12 are scaled to step size.
-        self.x0 = x0 / max_acc_batch_size
-        self.x1 = x1 / max_acc_batch_size
+        self.x0 = x0 / acc_batch_size
+        self.x1 = x1 / acc_batch_size
         self.p = p
         self.a = 1 / (1 - self.p**2) * (self.p**2 * self.x1 - self.x0)
         self.b = np.sqrt(self.x0 + self.a)
@@ -481,12 +481,18 @@ def save_ckpt(device, model, optimizer, step):
 
         
 def load_ckpt(device, model, optimizer, PATH):
-    # loads to
+    # loads model and optimizer state fomr a saved checkpoint 
     checkpoint = torch.load(PATH, map_location=torch.device('cpu'))
     model.load_state_dict(checkpoint['model'])
     if optimizer:
         optimizer.load_state_dict(checkpoint['optimizer'])
     model = DDP(model, device_ids=[device], find_unused_parameters=True)
+    
+    step_init = int(PATH.split('.pt')[0].split('_')[1])
+    if is_main_process():
+        print(f'model checkpoint loaded step_init:{step_init} -- PATH:{PATH}')
+    
+    return step_init
 
 
 def load_ddp_model_to_single_device(model, PATH):
@@ -504,35 +510,47 @@ def load_ddp_model_to_single_device(model, PATH):
     model.load_state_dict(new_state_dict)
 
 
-def train(device, model, optimizer, train_data, val_data, world_size):
+def train(device, model, optimizer, train_data, val_data, world_size, step_init):
     start = time.time()
-
     if is_main_process():
+        print(f'world_size: {world_size}')
         print(f'batch_size: {batch_size}')
         print(f'context_length: {context_length}')
         print(f'batch_jump: {batch_jump}')
-        print(f'max_acc_batch_size: {max_acc_batch_size}')
+        print(f'acc_batch_size: {acc_batch_size}')
         print(f'num_chunked_batches: {num_chunked_batches}')
-
-    (list_steps, list_losses, list_steps_val, list_losses_val, list_lr, list_secs, \
-                                                     list_ppl_val, list_grads) = [[] for _ in range(8)]
-    num_tokens = sample_no = step = 0
     
+    (list_steps, list_losses, list_steps_val, list_losses_val) = [[] for _ in range(4)]
+    (list_lr, list_secs, list_ppl_val, list_grads) = [[] for _ in range(4)]
+    num_tokens = sample_no = step = 0
+    n = len(train_data)
     lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
 
     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
-    n = len(train_data)
     
     # train-loop
-    for epoch in range(1,21):
+    for epoch in range(20):
         if is_main_process(): 
             print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
-            print(f'shaved number of tokens in train_data: {n -  (n // max_acc_batch_size)* max_acc_batch_size}', end='')
-            print(f' -- {((n // max_acc_batch_size)* max_acc_batch_size) / n * 100 : .2f} % train_data retained')
+            print(f'shaved number of tokens in train_data: {n -  (n // acc_batch_size)* acc_batch_size}', end='')
+            print(f' -- {((n // acc_batch_size)* acc_batch_size) / n * 100 : .2f} % train_data retained')
 
-        for q in range(0, n // max_acc_batch_size):
-            q0 = q * max_acc_batch_size
-            q1 = (q+1) * max_acc_batch_size + 1
+        for q in range(0, n // acc_batch_size):
+            if step < step_init:
+                step += 1
+                num_tokens += acc_batch_size
+                lr_scheduler.step()
+                list_lr.append(optimizer.param_groups[-1]['lr'])
+                list_steps.append(step)
+                list_losses.append(None)
+                list_secs.append(None)
+                list_steps_val[0] = list_ppl_val[0] = list_losses_val[0] = None
+                if is_main_process() and step % 1000 == 0:
+                    print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens}')
+                continue
+
+            q0 = q * acc_batch_size
+            q1 = (q+1) * acc_batch_size + 1
             data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
 
             mytrainset = MyDataset(data_step, context_length=context_length)
@@ -558,9 +576,9 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                     logits, loss = model(xb, yb) # evaluate the loss
                     loss.backward() # adds to the gradients
 
-                if total_size != max_acc_batch_size:
+                if total_size != acc_batch_size:
                     if is_main_process():
-                        print(f'total_size != max_acc_batch_size. device:{device}:  epoch:{epoch}'+
+                        print(f'total_size != acc_batch_size. device:{device}:  epoch:{epoch}'+
                               f'total_size={total_size} -- i:{i} -- batch_no:{batch_no} of {len(train_loader)}')
                     continue
 
@@ -593,10 +611,3 @@ def train(device, model, optimizer, train_data, val_data, world_size):
                     generate_text(model, device, step, ppl=list_ppl_val[-1])
                     save_ckpt(device, model, optimizer, step)
 
-
-
-        
-        
-        
-        
-        
