@@ -510,7 +510,7 @@ def load_ddp_model_to_single_device(model, PATH):
     model.load_state_dict(new_state_dict)
 
 
-def train(device, model, optimizer, train_data, val_data, world_size, step_init):
+def train(device, model, optimizer, train_data, val_data, world_size, step_init=0, num_tokens_init=0, q_init=0):
     start = time.time()
     if is_main_process():
         print(f'world_size: {world_size}')
@@ -528,26 +528,30 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init)
 
     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
     
+    if step_init > 0:
+        num_tokens = num_tokens_init
+        for step in range(step_init+1):
+            lr_scheduler.step()
+            list_lr.append(optimizer.param_groups[-1]['lr'])
+            list_steps.append(step)
+            list_losses.append(None)
+            list_secs.append(None)
+            list_steps_val[0] = list_ppl_val[0] = list_losses_val[0] = None
+        if is_main_process() and step % 1000 == 0:
+            print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens}')
+
     # train-loop
     for epoch in range(20):
         if is_main_process(): 
-            print(f'\n\n {"---"*30}\n\nepoch:{epoch}   num_chunked_batches:{num_chunked_batches} -- step:{step}')
+            print(f'\n {"---"*30}\n\nepoch:{epoch} -- num_chunked_batches:{num_chunked_batches} -- step:{step}')
             print(f'shaved number of tokens in train_data: {n -  (n // acc_batch_size)* acc_batch_size}', end='')
             print(f' -- {((n // acc_batch_size)* acc_batch_size) / n * 100 : .2f} % train_data retained')
 
         for q in range(0, n // acc_batch_size):
-            if step < step_init:
-                step += 1
-                num_tokens += acc_batch_size
-                lr_scheduler.step()
-                list_lr.append(optimizer.param_groups[-1]['lr'])
-                list_steps.append(step)
-                list_losses.append(None)
-                list_secs.append(None)
-                list_steps_val[0] = list_ppl_val[0] = list_losses_val[0] = None
-                if is_main_process() and step % 1000 == 0:
-                    print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens}')
+            if step_init > 0 and epoch == 0 and q < q_init:
                 continue
+            elif step_init > 0 and epoch == 0 and q == q_init and is_main_process():
+                print(f'Restarting from checkpoint. Fastforward batches step:{step} -- q:{q} -- num_tokens:{num_tokens}')
 
             q0 = q * acc_batch_size
             q1 = (q+1) * acc_batch_size + 1

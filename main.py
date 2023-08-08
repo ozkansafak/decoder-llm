@@ -35,7 +35,7 @@ def ddp_setup(device: int, world_size: int):
 def main(device, world_size):
     ddp_setup(device, world_size)
 
-    from utils.imports import vocab_size, learning_rate, num_chars, tokenizer
+    from utils.imports import vocab_size, learning_rate, num_chars, tokenizer, acc_batch_size
     from utils.helpers import load_val_data
     from utils.model import initialize_model, load_openwebtext_data, train, load_ckpt
     torch.manual_seed(device)
@@ -52,7 +52,10 @@ def main(device, world_size):
     train_data, val_data = load_openwebtext_data()
 
     # train loop
-    train(device, model, optimizer, train_data, val_data, world_size, step_init=2857)
+    num_tokens_init = int(step_init * 245760)
+    q_init = num_tokens_init // acc_batch_size
+    train(device, model, optimizer, train_data, val_data, world_size, 
+          step_init, num_tokens_init, q_init)
 
     destroy_process_group()
 
