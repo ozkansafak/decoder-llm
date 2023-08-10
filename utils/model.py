@@ -481,7 +481,7 @@ def save_ckpt(device, model, optimizer, step):
 
         
 def load_ckpt(device, model, optimizer, PATH):
-    # loads model and optimizer state fomr a saved checkpoint 
+    # loads model and optimizer state from a saved checkpoint 
     checkpoint = torch.load(PATH, map_location=torch.device('cpu'))
     model.load_state_dict(checkpoint['model'])
     if optimizer:
@@ -527,10 +527,10 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
     lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
 
     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
-    
+
     if step_init > 0:
         num_tokens = num_tokens_init
-        for step in range(step_init+1):
+        for step in range(1, step_init+1):
             lr_scheduler.step()
             list_lr.append(optimizer.param_groups[-1]['lr'])
             list_steps.append(step)
@@ -538,7 +538,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
             list_secs.append(None)
             list_steps_val[0] = list_ppl_val[0] = list_losses_val[0] = None
         if is_main_process() and step % 1000 == 0:
-            print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens}')
+            print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens:.1e}\n')
 
     # train-loop
     for epoch in range(20):
@@ -551,7 +551,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
             if step_init > 0 and epoch == 0 and q < q_init:
                 continue
             elif step_init > 0 and epoch == 0 and q == q_init and is_main_process():
-                print(f'Restarting from checkpoint. Fastforward batches step:{step} -- q:{q} -- num_tokens:{num_tokens}')
+                print(f'Restarting from checkpoint. Fastforward batches step:{step} -- q:{q} -- num_tokens:{num_tokens:.1e}')
 
             q0 = q * acc_batch_size
             q1 = (q+1) * acc_batch_size + 1
@@ -601,7 +601,9 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
                 s0 = time.time()
                 if is_main_process():
                     print(f' step:{step} -- loss:{list_losses[-1]:.2f}'+
+                          f' -- lr:{list_lr[-1]:.4e}'+
                           f' -- grad_norm1:{torch.linalg.norm(grad_vector1):.2f}'+
+                          f' -- num_tokens:{num_tokens:.2e}'+
                           f' -- {list_secs[-1]:.2f} secs')
 
                 if step % eval_iter == 0: # 5 steps

@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, vocab, batch_size, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls_pt
+from utils.imports import print_runtime, vocab, d_model, learning_rate, num_chars, encode, decode, plt, pylab, ls_pt
 
 
 def load_val_data(device, world_size):
