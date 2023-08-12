@@ -602,9 +602,10 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
                 if is_main_process():
                     print(f' step:{step} -- loss:{list_losses[-1]:.2f}'+
                           f' -- lr:{list_lr[-1]:.4e}'+
-                          f' -- grad_norm1:{torch.linalg.norm(grad_vector1):.2f}'+
+                          f' -- grad_norm:{torch.linalg.norm(grad_vector1):.2f}'+
                           f' -- num_tokens:{num_tokens:.2e}'+
-                          f' -- {list_secs[-1]:.2f} secs')
+                          f' -- {list_secs[-1]:.2f} secs'+
+                          f' -- {print_runtime(start, False)}')
 
                 if step % eval_iter == 0: # 5 steps
                     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)

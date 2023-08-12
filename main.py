@@ -74,12 +74,6 @@ if __name__ == '__main__':
 
     mp.spawn(main, args=(world_size,), nprocs=world_size)
 
-    """
-        NOTES:
-         -  plotter variable 'list_num_tokens', 'list_losses'..  how are they being reduced?
-         
-    """
-
     
     
     
