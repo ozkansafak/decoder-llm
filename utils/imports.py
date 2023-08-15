@@ -1,4 +1,4 @@
-# Hyperparamerters
+# Hyperparameters
 n_layers = 16
 d_model = 1024
 n_heads = 16

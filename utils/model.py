@@ -517,6 +517,8 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
         print(f'batch_size: {batch_size}')
         print(f'context_length: {context_length}')
         print(f'batch_jump: {batch_jump}')
+        print(f'x0: {x0/1e9:.3f}e9')
+        print(f'x1: {int(x1/1e9)}e9')
         print(f'acc_batch_size: {acc_batch_size}')
         print(f'num_chunked_batches: {num_chunked_batches}')
     
