@@ -45,14 +45,14 @@ def main(device, world_size):
     model.to(device)
     
     # load a previous checkpoint
-    step_init = load_ckpt(device, model, optimizer=None, PATH='/data/home/osafak/code/mygpt/models/chkpt_28000.pt')
+    step_init = load_ckpt(device, model, optimizer=optimizer, PATH='/data/home/osafak/code/mygpt/models/chkpt_02000.pt')
     model = DDP(model, device_ids=[device], find_unused_parameters=True)
     
     # load train_data and val_data 
     train_data, val_data = load_openwebtext_data()
 
     # train loop
-    num_tokens_init = (6000 * 245760) + (22000 * 516096)
+    num_tokens_init = (2000 * 734720)
     q_init = num_tokens_init // acc_batch_size
     train(device, model, optimizer, train_data, val_data, world_size, 
           step_init, num_tokens_init, q_init)

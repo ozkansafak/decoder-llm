@@ -84,18 +84,15 @@ def load_openwebtext_data():
 
 
 def get_grad_vector(model):
+    # takes 8-10 secs for the 1B model
     list_grads = []
-    dict_grads = dict()
-    dict_weights = dict()
     for name, param in model.named_parameters():
         if param.requires_grad and param.grad is not None:
-            list_grads.append(param.grad.view(-1,1))
-            dict_grads[name] = param.grad
-            dict_weights[name] = param
+            list_grads.append(param.grad.view(-1,1).detach().cpu())
         else:
             continue
     grad_vector = torch.cat(list_grads)
-    return grad_vector, dict_grads, dict_weights
+    return grad_vector
 
 def min2(ins):
     ins = [item for item in ins if item is not None]

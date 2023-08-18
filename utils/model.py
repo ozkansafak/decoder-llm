@@ -185,7 +185,7 @@ class DecoderModel(nn.Module):
             table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'context_length', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
             table.add_row([d_model, n_layers, n_heads, d_head, context_length, 
-                           f'{batch_size}\n{batch_size_gpu}/GPU', acc_batch_size, f'{learning_rate:.0e}'])
+                           f'{batch_size}\n{batch_size_gpu}/GPU', acc_batch_size, f'{learning_rate:.2e}'])
 
             self.table = table
             self.specs = str_num_params +\
@@ -539,8 +539,8 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
             list_losses.append(None)
             list_secs.append(None)
             list_steps_val[0] = list_ppl_val[0] = list_losses_val[0] = None
-        if is_main_process() and step % 1000 == 0:
-            print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens:.1e}\n')
+            if is_main_process() and step % 1 == 0:
+                print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens:.2e}')
 
     # train-loop
     for epoch in range(20):
@@ -553,7 +553,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
             if step_init > 0 and epoch == 0 and q < q_init:
                 continue
             elif step_init > 0 and epoch == 0 and q == q_init and is_main_process():
-                print(f'Restarting from checkpoint. Fastforward batches step:{step} -- q:{q} -- num_tokens:{num_tokens:.1e}')
+                print(f'Restarting from checkpoint. Fastforward batches step:{step} -- q:{q} -- num_tokens:{num_tokens:.2e}')
 
             q0 = q * acc_batch_size
             q1 = (q+1) * acc_batch_size + 1
@@ -589,7 +589,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
                     continue
 
                 step += 1
-                grad_vector1, _, _ = get_grad_vector(model)
+                grad_norm = torch.linalg.norm(get_grad_vector(model)) if step % 50 == 0 else np.nan
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip grads at 1.
                 optimizer.step() # Updates the weights:  w = w - grad * lr
                 optimizer.zero_grad(set_to_none=False)
@@ -604,19 +604,19 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
                 if is_main_process():
                     print(f' step:{step} -- loss:{list_losses[-1]:.2f}'+
                           f' -- lr:{list_lr[-1]:.4e}'+
-                          f' -- grad_norm:{torch.linalg.norm(grad_vector1):.2f}'+
+                          f' -- grad_norm:{grad_norm:.2f}'+
                           f' -- num_tokens:{num_tokens:.2e}'+
                           f' -- {list_secs[-1]:.2f} secs'+
                           f' -- {print_runtime(start, False)}')
 
-                if step % eval_iter == 0: # 5 steps
+                if step % eval_iter == 0: # 10 steps
                     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
 
-                if step % (eval_iter * 10) == 0:  # 50 steps
+                if step % (eval_iter * 50) == 0:  # 500 steps
                     plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
                             list_losses_val, list_secs, start)
 
-                if step % (eval_iter * 100) == 0: # 500 steps
+                if step % (eval_iter * 200) == 0: # 2000 steps
                     generate_text(model, device, step, ppl=list_ppl_val[-1])
                     save_ckpt(device, model, optimizer, step)
 

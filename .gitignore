@@ -10,3 +10,4 @@ transformer_tutorial/**
 **/text_output/**
 **/models/*
 **/*.tgz
+*.swp

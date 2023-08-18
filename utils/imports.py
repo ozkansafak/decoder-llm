@@ -1,17 +1,17 @@
 # Hyperparameters
-n_layers = 16
-d_model = 1024
-n_heads = 16
-context_length = int(1024 / 4) # (T) # maximum context length for predictions.
-batch_size_gpu = int(12 * 3)  # (B) # total number of batches loaded by each GPU
-learning_rate = 3e-4
+n_layers = 24
+d_model = 1728
+n_heads = 18
+context_length = int(1024 / 8) # (T) # maximum context length for predictions.
+batch_size_gpu = int(20)  # (B) # total number of batches loaded by each GPU
+learning_rate = 2.2e-4
 x0 = 0.375e9 # num_tokens at end of Linear warm up
 x1 = 30e9  # num_tokens at end of Cosine Annealing
 
-acc_batch_size = int(0.525e6)
+acc_batch_size = int(0.75e6)
 dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
 tokenizer = 'gpt2'
-eval_iter = 5
+eval_iter = 10
 # --------------------------------------
 
 num_chars = 0 
