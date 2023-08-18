@@ -5,6 +5,7 @@ n_heads = 18
 context_length = int(1024 / 8) # (T) # maximum context length for predictions.
 batch_size_gpu = int(20)  # (B) # total number of batches loaded by each GPU
 learning_rate = 2.2e-4
+clip = 1.0
 x0 = 0.375e9 # num_tokens at end of Linear warm up
 x1 = 30e9  # num_tokens at end of Cosine Annealing
 

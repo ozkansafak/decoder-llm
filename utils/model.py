@@ -16,7 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1
+from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1, clip
 
 from utils.helpers import plotter, load_google_corpus, load_openwebtext_data, get_grad_vector
 
@@ -519,6 +519,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
         print(f'batch_jump: {batch_jump}')
         print(f'x0: {x0/1e9:.3f}e9')
         print(f'x1: {int(x1/1e9)}e9')
+        print(f'clip: {clip:.2f}')
         print(f'acc_batch_size: {acc_batch_size}')
         print(f'num_chunked_batches: {num_chunked_batches}')
     
@@ -590,7 +591,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
 
                 step += 1
                 grad_norm = torch.linalg.norm(get_grad_vector(model)) if step % 50 == 0 else np.nan
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip grads at 1.
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip) # clip grads at 1.
                 optimizer.step() # Updates the weights:  w = w - grad * lr
                 optimizer.zero_grad(set_to_none=False)
                 lr_scheduler.step()
