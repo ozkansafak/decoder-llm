@@ -27,33 +27,32 @@ class SingleHead(nn.Module):
     """ one self-attention head """
     def __init__(self):
         super().__init__()
-        self.key = nn.Linear(d_model, d_head, bias=False)
-        self.query = nn.Linear(d_model, d_head, bias=False)
-        self.value = nn.Linear(d_model, d_head, bias=False)
+        self.W_K = nn.Linear(d_model, d_head, bias=False)
+        self.W_Q = nn.Linear(d_model, d_head, bias=False)
+        self.W_V = nn.Linear(d_model, d_head, bias=False)
         """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. 
             Here, we register_buffer self.tril so the gradients of the values of the mask won't be computed.
                >  If you have parameters in your model, which should be saved and restored in the state_dict,
                >  but not trained by the optimizer, you should register them as buffers.
         """
-        #self.register_buffer('tril', torch.tril(torch.ones(context_length, context_length)))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, eos_mask):
-        B, T, C = x.shape  # '''(batch_size, context_length, embedding dimension)'''
+        B, T, C = x.shape  # (batch_size_gpu, context_length, d_model)
         # idx and targets are both (B,T) tensor of integers
-        k = self.key(x) # (B,T,C)
-        q = self.query(x) # (B,T,C)
+        K = self.W_K(x) # (B, T, d_head) 
+        Q = self.W_Q(x) # (B, T, d_head)
+        V = self.W_V(x) # (B, T, T)
 
         # Computer attention scores ("affinities")
-        wei = q @ k.transpose(-2, -1) / np.sqrt(C)  # (B, T, T)
-        wei = wei.masked_fill(eos_mask[:B, :T, :T] == 0, float('-inf'))  # (B,T,T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
-        wei = self.dropout(wei)  # randomly prevent nodes from communicating
+        Attn = torch.einsum('bik,bjk->bij', Q, K) / np.sqrt(d_head)
+        Attn = Attn.masked_fill(eos_mask[:B, :T, :T] == 0, float('-inf'))  # (B, T, T)
+        Attn = F.softmax(Attn, dim=-1) # (B, T, T)
+        Attn = self.dropout(Attn) # randomly prevent nodes from communicating
 
         # Perform weighted aggregation of the values 
-        v = self.value(x) # (B, T, T)
-        out = wei @ v # (B, T, C)
-        
+        out = torch.einsum('bij,bjk->bik', Attn, V) # (B, T, d_head)
+
         return out
 
 
@@ -105,11 +104,11 @@ class Block(nn.Module):
     def forward(self, ins):
         x, eos_mask = ins
 
-        # Residual connections, yay! Fork off, apply a function and join with the main stream with an addition. 
+        # Residual connections. Fork off, apply a function and join with the main stream with an addition. 
         x = self.ln1(x)
-        x = x + self.self_attention((x), eos_mask)
+        x = x + self.self_attention(x, eos_mask)
         x = self.ln2(x)
-        x = x + self.mlp((x))
+        x = x + self.mlp(x)
         return x, eos_mask
 
 
@@ -545,7 +544,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
 
     # train-loop
     for epoch in range(20):
-        if is_main_process(): 
+        if is_main_process():
             print(f'\n {"---"*30}\n\nepoch:{epoch} -- num_chunked_batches:{num_chunked_batches} -- step:{step}')
             print(f'shaved number of tokens in train_data: {n -  (n // acc_batch_size)* acc_batch_size}', end='')
             print(f' -- {((n // acc_batch_size)* acc_batch_size) / n * 100 : .2f} % train_data retained')

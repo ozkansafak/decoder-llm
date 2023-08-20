@@ -39,21 +39,24 @@ def main(device, world_size):
     from utils.helpers import load_val_data
     from utils.model import initialize_model, load_openwebtext_data, train, load_ckpt
     torch.manual_seed(device)
-
+    # default values
+    num_tokens_init = q_init = step_init = 0
+    
     # instantiate model
     model, optimizer = initialize_model(vocab_size, device, learning_rate)
     model.to(device)
     
     # load a previous checkpoint
-    step_init = load_ckpt(device, model, optimizer=optimizer, PATH='/data/home/osafak/code/mygpt/models/chkpt_02000.pt')
+    #step_init = load_ckpt(device, model, optimizer=optimizer, PATH='/data/home/osafak/code/mygpt/models/chkpt_02000.pt')
     model = DDP(model, device_ids=[device], find_unused_parameters=True)
     
     # load train_data and val_data 
     train_data, val_data = load_openwebtext_data()
 
     # train loop
-    num_tokens_init = (2000 * 734720)
-    q_init = num_tokens_init // acc_batch_size
+    #num_tokens_init = (2000 * 734720)
+    #q_init = num_tokens_init // acc_batch_size
+    
     train(device, model, optimizer, train_data, val_data, world_size, 
           step_init, num_tokens_init, q_init)
 
@@ -63,7 +66,7 @@ def main(device, world_size):
 if __name__ == '__main__':
     import argparse, time
     from utils.imports import world_size, tokenizer
-    os.system('/data/home/osafak/.my_gpu_kill.sh'); time.sleep(.3)
+    #os.system('/data/home/osafak/.my_gpu_kill.sh'); time.sleep(.3)
     print(f"tokenizer: {tokenizer}")
     print(f"CUDA_VISIBLE_DEVICES = {os.environ['CUDA_VISIBLE_DEVICES']}")
     parser = argparse.ArgumentParser(description='simple distributed training job')
