@@ -24,7 +24,7 @@ torch.manual_seed(1337)
 
 
 class SingleHead(nn.Module):
-    """ one self-attention head """
+    """ single self-attention head """
     def __init__(self):
         super().__init__()
         self.W_K = nn.Linear(d_model, d_head, bias=False)
@@ -96,7 +96,7 @@ class Block(nn.Module):
     def __init__(self, d_model, n_heads):
         # d_model: embedding dimension, n_heads: the number of heads we'd like
         super().__init__() 
-        self.self_attention = MultiHeadAttention(n_heads)
+        self.attention = MultiHeadAttention(n_heads)
         self.mlp = MLP(d_model)
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
@@ -105,10 +105,16 @@ class Block(nn.Module):
         x, eos_mask = ins
 
         # Residual connections. Fork off, apply a function and join with the main stream with an addition. 
-        x = self.ln1(x)
-        x = x + self.self_attention(x, eos_mask)
-        x = self.ln2(x)
-        x = x + self.mlp(x)
+        # SAFAK-5
+        #x = self.ln1(x)
+        #x = x + self.attention(x, eos_mask)
+        #x = self.ln2(x)
+        #x = x + self.mlp(x)
+        
+        # GPT-2 and nano-gpt
+        x = x + self.attention(self.ln1(x), eos_mask)
+        x = x + self.mlp(self.ln2(x))
+        
         return x, eos_mask
 
 
@@ -122,7 +128,7 @@ class DecoderModel(nn.Module):
         
         self.blocks = nn.Sequential(*[Block(d_model, n_heads) for _ in range(n_layers)])
         self.ln_f = nn.LayerNorm(d_model) # final layer norm
-        self.lm_head = nn.Linear(d_model, vocab_size)
+        self.lm_head = nn.Linear(d_model, vocab_size) # 
         self.device = device
         self.num_params = None
         self.footprint = None
@@ -142,10 +148,11 @@ class DecoderModel(nn.Module):
         for b, t in zip(*idx): # T
             eos_mask[b, t:, :t] = 0 # this needs to be [b, t:, :(t+1)]
         
-        token_embeddings = self.token_embedding_table(inputs)  # (B,T,C) = (batch, time, vocab_size)
+        token_embeddings = self.token_embedding_table(inputs) # (B,T,d_model)
         position_embeddings = self.position_embedding_table(torch.arange(T, device=inputs.device)) # (1,T,C)-PositionalEncoding
-        x = token_embeddings + position_embeddings # (B,T,C)
-        x, _ = self.blocks((x, eos_mask)) # (B,T,C)
+        x = token_embeddings + position_embeddings # (B,T,d_model)
+        x, _ = self.blocks((x, eos_mask)) # (B,T,d_model)
+        x = self.ln_f(x) # todo: This line was left out. Train again with GPT-2 style Blocks and with ln_f.
         logits = self.lm_head(x) # (B,T,vocab_size)
         
         if targets is None:
@@ -296,8 +303,8 @@ def generate_text(model, device, step=None, ppl=None):
     out_tokens = generate_tokens(model, device, idx=seed_tokens).tolist()
     output = f''.join(decode(out_tokens))
     print(f'\n===> In generate_text(): step:{step} -- ppl:{ppl:.2f} -- {print_runtime(s0, False)}')
-    print(f'===> seed_text: {seed_text}')
-    print(f'===>     mygpt: {output.split(seed_text)[1]}')
+    print(f'===> seed_text  : {seed_text}')
+    print(f'===> decoder-llm: {output.split(seed_text)[1]}')
     print('---' *30 + '\n')
     model.train()
 
@@ -485,9 +492,10 @@ def load_ckpt(device, model, optimizer, PATH):
     model.load_state_dict(checkpoint['model'])
     if optimizer:
         optimizer.load_state_dict(checkpoint['optimizer'])
-    model = DDP(model, device_ids=[device], find_unused_parameters=True)
+    #model = DDP(model, device_ids=[device], find_unused_parameters=True)
     
-    step_init = int(PATH.split('.pt')[0].split('_')[1])
+    step_init = int(PATH.split('/')[-1].split('.pt')[0].split('_')[-1])
+    
     if is_main_process():
         print(f'model checkpoint loaded step_init:{step_init} -- PATH:{PATH}')
     
@@ -521,6 +529,10 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
         print(f'clip: {clip:.2f}')
         print(f'acc_batch_size: {acc_batch_size}')
         print(f'num_chunked_batches: {num_chunked_batches}')
+        print(f'step_init: {step_init}')
+        print(f'num_tokens_init: {num_tokens_init}')
+        print(f'q_init: {q_init}')
+        
     
     (list_steps, list_losses, list_steps_val, list_losses_val) = [[] for _ in range(4)]
     (list_lr, list_secs, list_ppl_val, list_grads) = [[] for _ in range(4)]
@@ -539,7 +551,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
             list_losses.append(None)
             list_secs.append(None)
             list_steps_val[0] = list_ppl_val[0] = list_losses_val[0] = None
-            if is_main_process() and step % 1 == 0:
+            if is_main_process() and step % 1000 == 0:
                 print(f'Restarting from checkpoint. Fastforward batches step:{step} -- num_tokens:{num_tokens:.2e}')
 
     # train-loop
