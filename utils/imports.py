@@ -1,10 +1,10 @@
 # Hyperparameters
-n_layers = 12
-d_model = 512
-n_heads = 8
+n_layers = 16
+d_model = 1024
+n_heads = 16
 context_length = 256 # (T) # maximum context length for predictions.
-batch_size_gpu = 70  # (B) # total number of batches loaded by each GPU
-learning_rate = 6e-4
+batch_size_gpu = 36  # (B) # total number of batches loaded by each GPU
+learning_rate = 3e-4
 acc_batch_size = int(0.525e6)
 
 clip = 1.0
