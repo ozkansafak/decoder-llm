@@ -47,10 +47,10 @@ def main(device, world_size):
     model.to(device)
     
     # load a previous checkpoint
-#     PATH='/data/home/osafak/code/decoder-llm/saved_runs/1B_shortcontext/models/chkpt_04000.pt'
-#     step_init = load_ckpt(device, model, optimizer, PATH)
-#     num_tokens_init = (step_init * 734720)
-#     q_init = num_tokens_init // acc_batch_size
+    PATH='/data/home/osafak/code/decoder-llm/saved_runs/304M_v2/models/chkpt_22000.pt'
+    step_init = load_ckpt(device, model, optimizer, PATH)
+    num_tokens_init = (step_init * 516096)
+    q_init = num_tokens_init // acc_batch_size
     
     model = DDP(model, device_ids=[device], find_unused_parameters=True)
     
