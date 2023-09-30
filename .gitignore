@@ -1,3 +1,5 @@
+**/ddp_tutorial/**
+**/.DS_Store
 **/.ipynb_checkpoints/**
 **/dataset/**
 **/nohup.out
@@ -8,6 +10,7 @@
 *.log
 transformer_tutorial/**
 **/text_output/**
+**/temp.txt
 **/models/*
 **/*.tgz
 *.swp
