@@ -16,7 +16,8 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import print_runtime, d_head, vocab_size, batch_size, batch_size_gpu, batch_jump, d_model, n_heads, n_layers, context_length, learning_rate, dropout, num_chars, encode, decode, world_size, tokenizer, acc_batch_size, num_chunked_batches, eval_iter, print_trainset_deets, x0, x1, clip
+from utils.imports import (print_runtime, vocab_size, config, batch_jump, 
+num_chars, encode, decode, world_size, acc_batch_size, num_chunked_batches, print_trainset_deets)
 
 from utils.helpers import plotter, load_google_corpus, load_openwebtext_data, get_grad_vector
 
@@ -27,15 +28,15 @@ class SingleHead(nn.Module):
     """ single self-attention head """
     def __init__(self):
         super().__init__()
-        self.W_K = nn.Linear(d_model, d_head, bias=False)
-        self.W_Q = nn.Linear(d_model, d_head, bias=False)
-        self.W_V = nn.Linear(d_model, d_head, bias=False)
+        self.W_K = nn.Linear(config['d_model'], config['d_head'], bias=False)
+        self.W_Q = nn.Linear(config['d_model'], config['d_head'], bias=False)
+        self.W_V = nn.Linear(config['d_model'], config['d_head'], bias=False)
         """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. 
             Here, we register_buffer self.tril so the gradients of the values of the mask won't be computed.
                >  If you have parameters in your model, which should be saved and restored in the state_dict,
                >  but not trained by the optimizer, you should register them as buffers.
         """
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(config['dropout'])
 
     def forward(self, x, eos_mask):
         B, T, C = x.shape  # (batch_size_gpu, context_length, d_model)
@@ -64,8 +65,8 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads):
         super().__init__()
         self.heads = nn.ModuleList([SingleHead() for _ in range(num_heads)])
-        self.proj = nn.Linear(d_model, d_model) 
-        self.dropout = nn.Dropout(dropout)
+        self.proj = nn.Linear(config['d_model'], config['d_model']) 
+        self.dropout = nn.Dropout(config['dropout'])
 
     def forward(self, x, eos_mask):
         # concatenate over the channel dimension, then pass it through a linear layer to project.
@@ -83,7 +84,7 @@ class MLP(nn.Module):
             nn.Linear(d_model, 4 * d_model),
             nn.ReLU(),
             nn.Linear(4 * d_model, d_model),
-            nn.Dropout(dropout),
+            nn.Dropout(config['dropout']),
         )
 
     def forward(self, x):
@@ -123,19 +124,19 @@ class DecoderModel(nn.Module):
         super().__init__()
         # super(PositionalEncoding, self).__init__()
         # each token directly reads the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, d_model)
-        self.position_embedding_table = PositionalEncoding(context_length, d_model, dropout)  # (1,T,C)
+        self.token_embedding_table = nn.Embedding(vocab_size, config['d_model'])
+        self.position_embedding_table = PositionalEncoding(config['context_length'], config['d_model'], config['dropout'])  # (1,T,C)
         
-        self.blocks = nn.Sequential(*[Block(d_model, n_heads) for _ in range(n_layers)])
-        self.ln_f = nn.LayerNorm(d_model) # final layer norm
-        self.lm_head = nn.Linear(d_model, vocab_size) # 
+        self.blocks = nn.Sequential(*[Block(config['d_model'], config['n_heads']) for _ in range(config['n_layers'])])
+        self.ln_f = nn.LayerNorm(config['d_model']) # final layer norm
+        self.lm_head = nn.Linear(config['d_model'], vocab_size) # 
         self.device = device
         self.num_params = None
         self.footprint = None
         self.table = None
         self.specs = None
         self.print_hyperparams_to_stdout()
-        self.register_buffer('eos_mask_template', torch.tril(torch.ones(context_length, context_length)))
+        self.register_buffer('eos_mask_template', torch.tril(torch.ones(config['context_length'], config['context_length'])))
 
     def forward(self, inputs, targets=None):
         # inputs and targets are both shape (B,T) tensor of integers
@@ -190,12 +191,12 @@ class DecoderModel(nn.Module):
             self.footprint = num_params * next(self.parameters()).element_size()
             table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'context_length', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
-            table.add_row([d_model, n_layers, n_heads, d_head, context_length, 
-                           f'{batch_size}\n{batch_size_gpu}/GPU', acc_batch_size, f'{learning_rate:.2e}'])
+            table.add_row([config['d_model'], config['n_layers'], config['n_heads'], config['d_head'], config['context_length'], 
+                           f"{config['batch_size']}\n{config['batch_size_gpu']}/GPU", acc_batch_size, f"{config['learning_rate']:.2e}"])
 
             self.table = table
             self.specs = str_num_params +\
-                         f"\ntokenizer:{tokenizer}\nCUDA_VISIBLE_DEVICES:{os.environ['CUDA_VISIBLE_DEVICES']}"+\
+                         f"\ntokenizer:{config['tokenizer']}\nCUDA_VISIBLE_DEVICES:{os.environ['CUDA_VISIBLE_DEVICES']}"+\
                          f"\nworld_size:{world_size}"
             print(table)
 
@@ -259,16 +260,16 @@ def perplexity(model, device, data, list_steps_val, step, list_losses_val, list_
         q0 = q * acc_batch_size
         q1 = (q+1) * acc_batch_size + 1
         data_step = torch.from_numpy(data[q0:q1].astype(np.int64))
-        mytestset = MyDataset(data_step, context_length=context_length)
+        mytestset = MyDataset(data_step, context_length=config['context_length'])
         test_loader = torch.utils.data.DataLoader(dataset=mytestset,
-                                                  batch_size=(num_chunked_batches*batch_size),
+                                                  batch_size=(num_chunked_batches*config['batch_size']),
                                                   shuffle=False,
                                                   sampler=DistributedSampler(mytestset))
 
         for batch_no, (xb_big, yb_big) in enumerate(test_loader):
             for i in range(num_chunked_batches):
-                xb = xb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]  # each device ==> (4, 512) 
-                yb = yb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]
+                xb = xb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]  # each device ==> (4, 512) 
+                yb = yb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]
 
                 logits, loss = model(xb, yb) # evaluate the loss
                 ctr += 1
@@ -520,18 +521,18 @@ def load_ddp_model_to_single_device(model, PATH):
 def train(device, model, optimizer, train_data, val_data, world_size, step_init=0, num_tokens_init=0, q_init=0):
     start = time.time()
     if is_main_process():
-        print(f'world_size: {world_size}')
-        print(f'batch_size: {batch_size}')
-        print(f'context_length: {context_length}')
-        print(f'batch_jump: {batch_jump}')
-        print(f'x0: {x0/1e9:.3f}e9')
-        print(f'x1: {int(x1/1e9)}e9')
-        print(f'clip: {clip:.2f}')
-        print(f'acc_batch_size: {acc_batch_size}')
-        print(f'num_chunked_batches: {num_chunked_batches}')
-        print(f'step_init: {step_init}')
-        print(f'num_tokens_init: {num_tokens_init}')
-        print(f'q_init: {q_init}')
+        print(f"world_size: {world_size}")
+        print(f"batch_size: {config['batch_size']}")
+        print(f"context_length: {config['context_length']}")
+        print(f"batch_jump: {batch_jump}")
+        print(f"x0: {config['x0']/1e9:.3f}e9")
+        print(f"x1: {int(config['x1']/1e9)}e9")
+        print(f"clip: {config['clip']:.2f}")
+        print(f"acc_batch_size: {acc_batch_size}")
+        print(f"num_chunked_batches: {num_chunked_batches}")
+        print(f"step_init: {step_init}")
+        print(f"num_tokens_init: {num_tokens_init}")
+        print(f"q_init: {q_init}")
         
     
     (list_steps, list_losses, list_steps_val, list_losses_val) = [[] for _ in range(4)]
@@ -571,7 +572,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
             q1 = (q+1) * acc_batch_size + 1
             data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
 
-            mytrainset = MyDataset(data_step, context_length=context_length)
+            mytrainset = MyDataset(data_step, context_length=config['context_length'])
             train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
                                                        batch_size=(num_chunked_batches*batch_size),
                                                        shuffle=False,
@@ -584,10 +585,10 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
                 yb_big = yb_big.to(device)  
                 total_size = 0
                 for i in range(num_chunked_batches):
-                    xb = xb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]  # each device ==> (4, 512) 
-                    yb = yb_big[i*batch_size_gpu : (i+1)*batch_size_gpu]
-                    num_tokens += len(xb) * context_length * world_size
-                    total_size += len(xb) * context_length * world_size
+                    xb = xb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]  # each device ==> (4, 512) 
+                    yb = yb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]
+                    num_tokens += len(xb) * config['context_length'] * world_size
+                    total_size += len(xb) * config['context_length'] * world_size
                     if is_main_process():
                         print('.', end='')
 
@@ -621,14 +622,14 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
                           f' -- {list_secs[-1]:.2f} secs'+
                           f' -- {print_runtime(start, False)}')
 
-                if step % eval_iter == 0: # 10 steps
+                if step % config['eval_iter'] == 0: # 10 steps
                     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
 
-                if step % (eval_iter * 50) == 0:  # 500 steps
+                if step % (config['eval_iter'] * 50) == 0:  # 500 steps
                     plotter(model, device, list_steps, list_losses, list_lr, list_ppl_val, list_steps_val, 
                             list_losses_val, list_secs, start)
 
-                if step % (eval_iter * 200) == 0: # 2000 steps
+                if step % (config['eval_iter'] * 200) == 0: # 2000 steps
                     generate_text(model, device, step, ppl=list_ppl_val[-1])
                     save_ckpt(device, model, optimizer, step)
 

@@ -1,25 +1,4 @@
-# Hyperparameters
-n_layers = 16
-d_model = 1024
-n_heads = 16
-context_length = 256 # (T) # maximum context length for predictions.
-batch_size_gpu = 36  # (B) # total number of batches loaded by each GPU
-learning_rate = 3e-4
-acc_batch_size = int(0.525e6)
-
-clip = 1.0
-x0 = 0.375e9 * 3 # num_tokens at end of Linear warm up
-x1 = 30e9 # num_tokens at end of Cosine Annealing
-dropout = 0.0 # use 0.0 for pre-training. For fine-tuning maybe 0.1 or 0.2
-tokenizer = 'gpt2'
-eval_iter = 10
-# --------------------------------------
-
-num_chars = 0 
-d_head = int(d_model / n_heads)
-
-assert (d_model / n_heads) % 1 == 0
-
+import yaml
 import os
 import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
 from collections import Counter
@@ -41,22 +20,32 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-# ------------------------------------------------------------------------------------------------
+# Hyperparameters
+with open("config.yml", 'r') as file:
+    config = yaml.safe_load(file)
+
 str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
 vocab = set(str_vocab)
 
-assert tokenizer in ['gpt2', 'character']
+assert config['tokenizer'] in ['gpt2', 'character']
 
-world_size = torch.cuda.device_count()  # 7
-batch_size = batch_size_gpu * world_size  # 42
-if batch_size % world_size > 0:
-    print(f'===> batch_size not a multiple of world_size: (batch_size % world_size = {batch_size % world_size}) '+
-          f'batch_size will be clipped to {(batch_size // world_size) * world_size}')
-    batch_size = (batch_size // world_size) * world_size
+
+num_chars = 0 
+config['d_head'] = int(config['d_model'] / config['n_heads'])
+
+assert (config['d_model'] / config['n_heads']) % 1 == 0
+
+
+world_size = torch.cuda.device_count()  if torch.cuda.is_available() else 1 # 7
+config['batch_size'] = config['batch_size_gpu'] * world_size  # 42
+if config['batch_size'] % world_size > 0:
+    print(f"===> batch_size not a multiple of world_size: (batch_size % world_size = {config['batch_size'] % world_size}) "+
+          f"batch_size will be clipped to {(config['batch_size'] // world_size) * world_size}")
+    config['batch_size'] = (config['batch_size'] // world_size) * world_size
 
 # this is batch_size (B) per gpu.
-batch_jump = (context_length * batch_size)  # number of tokens ingested in each batch
-acc_batch_size = (acc_batch_size // batch_jump) * batch_jump  
+batch_jump = (config['context_length'] * config['batch_size'])  # number of tokens ingested in each batch
+acc_batch_size = (config['acc_batch_size'] // batch_jump) * batch_jump  
 num_chunked_batches = int(acc_batch_size / batch_jump) # number of loss.backward() made before doing an optim.step()
 
 _directory = "/data/home/osafak/code/mygpt/dataset/news_tensors"
@@ -108,15 +97,9 @@ def count_parameters(model):
     return total_params
 
 
-with open('dataset/scraped_urls.json', 'r') as f:
-    # len(scraped_urls) = 2450704
-    scraped_urls = {}
-#     scraped_urls = json.load(f)
-#     random.shuffle(scraped_urls)
-    
-if tokenizer == 'gpt2':
+if config['tokenizer'] == 'gpt2':
     encFunc = ENCODING_CONSTRUCTORS['gpt2']
-    encDict = encFunc()
+    encDict = encFunc() 
     enc = tiktoken.Encoding(encDict['name'], pat_str=encDict['pat_str'], mergeable_ranks=encDict['mergeable_ranks'], 
                             special_tokens=encDict['special_tokens' ])
     vocab_size = enc.n_vocab
