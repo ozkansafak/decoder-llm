@@ -1,50 +1,55 @@
+# Import standard libraries
 import os
 import time
+import datetime
+import pytz
+
+# Import scientific computing libraries
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
+
+# Import PyTorch neural network module
 from torch import nn
-import matplotlib.pyplot as pl
-from utils.imports import (
-    print_runtime,
-    ls_pt,
-)
+
+# Import custom utilities
+from utils.imports import print_runtime, ls_pt
 
 
-def clean_up(text: str, vocab: set) -> str:
-    list_text = [c if c in vocab else ' ' for c in text]
-    cleaned_text = ''.join(list_text)
+def clean_text(text: str, vocab: set) -> str:
+    cleaned_text = ''.join([char if char in vocab else ' ' for char in text])
     return cleaned_text
 
-
-def ptxt(num_chars: int) -> str:
+def pretty_print_number(num_chars: int) -> str:
     if num_chars < 1e6:
         return f'{num_chars * 1e-3:3.2f} K'
-    if num_chars < 1e9:
+    elif num_chars < 1e9:
         return f'{num_chars * 1e-6:3.2f} M'
-    if num_chars < 1e12:
+    elif num_chars < 1e12:
         return f'{num_chars * 1e-9:3.2f} G'
     return ''
 
 
-def load_google_corpus(device: int, idx_file: int) -> (torch.Tensor, int):
-    s0 = time.time()
-    fname = ls_pt[idx_file % len(ls_pt)]
-    data = torch.load(fname).to(torch.long)
-
+def load_google_corpus(device: int, idx: int) -> (torch.Tensor, int):
+    start_time = time.time()
+    filename = ls_pt[idx % len(ls_pt)]
+    data = torch.load(filename).long()
+    
     if device == 0:
-        print(f'Loaded Google Corpus: idx_file {idx_file} -- {idx_file / len(ls_pt) * 100:.0f}% of trainset files')
-        print(f'{fname.split("/")[-1]} --  len(data): {len(data) / 1e6:.2f} million tokens -- {print_runtime(s0, False)}')
+        print(f'Loaded Google Corpus: file index {idx} -- {idx / len(ls_pt) * 100:.0f}% completed')
+        print(f'{filename.split("/")[-1]} --  Data Length: {len(data) / 1e6:.2f} million tokens -- {print_runtime(start_time, False)}')
 
-    return data, idx_file + 1
+    return data, idx + 1
 
 
-def load_openwebtext_data() -> (np.ndarray, np.ndarray):
-    s0 = time.time()
+def load_openwebtext_dataset() -> (np.ndarray, np.ndarray):
+    start_time = time.time()
     data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
-    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    training_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+    validation_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    
+    return training_data, validation_data
 
-    return train_data, val_data
 
 
 def get_grad_vector(model: nn.Module) -> torch.Tensor:
@@ -53,8 +58,8 @@ def get_grad_vector(model: nn.Module) -> torch.Tensor:
     return grad_vector
 
 
-def min2(inputs: list) -> int:
-    return min(filter(None, inputs)) if any(inputs) else 0
+def find_min_non_zero(inputs: list) -> int:
+    return min(x for x in inputs if x is not None) if any(inputs) else 0
 
 
 def plotter(

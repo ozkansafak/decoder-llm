@@ -1,3 +1,5 @@
+from typing import Tuple, List, Optional
+
 import os
 import time
 import numpy as np
@@ -8,16 +10,25 @@ from prettytable import PrettyTable
 
 from torch.utils.data.distributed import DistributedSampler
 
-from utils.imports import (print_runtime, config, batch_jump, 
-encode, decode, world_size, acc_batch_size, num_chunked_batches)
+from utils.imports import (
+    print_runtime, 
+    config, 
+    batch_jump, 
+    encode, 
+    decode, 
+    world_size, 
+    acc_batch_size, 
+    num_chunked_batches
+)
 
 from utils.helpers import plotter, get_grad_vector
 
+# Seed for reproducibility
 torch.manual_seed(1337)
 
 
 class SingleHead(nn.Module):
-    """ single self-attention head """
+    """ Single self-attention head """
     def __init__(self):
         super().__init__()
         self.W_K = nn.Linear(config['d_model'], config['d_head'], bias=False)
@@ -28,9 +39,11 @@ class SingleHead(nn.Module):
                >  If you have parameters in your model, which should be saved and restored in the state_dict,
                >  but not trained by the optimizer, you should register them as buffers.
         """
+        
+        # Dropout layer to regularization
         self.dropout = nn.Dropout(config['dropout'])
 
-    def forward(self, x, eos_mask):
+    def forward(self, x: torch.Tensor, eos_mask: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape  # (batch_size_gpu, context_length, d_model)
         # idx and targets are both (B,T) tensor of integers
         K = self.W_K(x) # (B, T, d_head) 
@@ -38,7 +51,7 @@ class SingleHead(nn.Module):
         V = self.W_V(x) # (B, T, T)
 
         # Computer attention scores ("affinities")
-        Attn = torch.einsum('bik,bjk->bij', Q, K) / np.sqrt(d_head)
+        Attn = torch.einsum('bik,bjk->bij', Q, K) / np.sqrt(config['d_head'])
         Attn = Attn.masked_fill(eos_mask[:B, :T, :T] == 0, float('-inf'))  # (B, T, T)
         Attn = F.softmax(Attn, dim=-1) # (B, T, T)
         Attn = self.dropout(Attn) # randomly prevent nodes from communicating
@@ -50,18 +63,19 @@ class SingleHead(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """ multiple heads of self-attention in parallel 
+    """ Multiple heads of self-attention in parallel 
         num_heads: each self-attention head is a communication channel for the tokens in sequence
         d_head: dimension of k,q,v vectors
     """
-    def __init__(self, num_heads):
+    def __init__(self, num_heads: int):
         super().__init__()
-        self.heads = nn.ModuleList([SingleHead() for _ in range(num_heads)])
-        self.proj = nn.Linear(config['d_model'], config['d_model']) 
-        self.dropout = nn.Dropout(config['dropout'])
+        self.heads = nn.ModuleList([SingleHead() for _ in range(num_heads)]) # type: nn.ModuleList
+        self.proj = nn.Linear(config['d_model'], config['d_model']) # type: nn.Linear
+        self.dropout = nn.Dropout(config['dropout']) # type: nn.Dropout
 
-    def forward(self, x, eos_mask):
-        # concatenate over the channel dimension, then pass it through a linear layer to project.
+
+    def forward(self, x: torch.Tensor, eos_mask: torch.Tensor) -> torch.Tensor:
+        # Concatenate over the channel dimension, then pass it through a linear layer to project.
         out = torch.cat([h(x, eos_mask) for h in self.heads], dim=-1)
         out = self.proj(out)
         out = self.dropout(out)
@@ -69,24 +83,25 @@ class MultiHeadAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, d_model):
+    """ Simple multi-layer perceptron """
+    def __init__(self, d_model: int):
         super().__init__()
         self.net = nn.Sequential(
             # hidden layer size is 4x the input layer
-            nn.Linear(d_model, 4 * d_model),
+            nn.Linear(d_model, 4 * d_model),  
             nn.ReLU(),
             nn.Linear(4 * d_model, d_model),
             nn.Dropout(config['dropout']),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
 class Block(nn.Module):
     """ Transformer block: communication (MultiHeadAttention) followed by computation (MLP) """
 
-    def __init__(self, d_model, n_heads):
+    def __init__(self, d_model: int, n_heads: int):
         # d_model: embedding dimension, n_heads: the number of heads we'd like
         super().__init__() 
         self.attention = MultiHeadAttention(n_heads)
@@ -94,7 +109,7 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
 
-    def forward(self, ins):
+    def forward(self, ins: tuple) -> tuple:
         x, eos_mask = ins
 
         # Residual connections. Fork off, apply a function and join with the main stream with an addition. 
@@ -104,7 +119,8 @@ class Block(nn.Module):
         #x = self.ln2(x)
         #x = x + self.mlp(x)
         
-        # GPT-2 and nano-gpt
+        # GPT-2 and karpathy's nano-gpt
+        # Apply attention and MLP layers
         x = x + self.attention(self.ln1(x), eos_mask)
         x = x + self.mlp(self.ln2(x))
         
@@ -112,7 +128,7 @@ class Block(nn.Module):
 
 
 class DecoderModel(nn.Module):
-    def __init__(self, vocab_size, device):
+    def __init__(self, vocab_size: int, device: torch.device, config: dict):
         super().__init__()
         # super(PositionalEncoding, self).__init__()
         # each token directly reads the logits for the next token from a lookup table
@@ -130,7 +146,7 @@ class DecoderModel(nn.Module):
         self.print_hyperparams_to_stdout()
         self.register_buffer('eos_mask_template', torch.tril(torch.ones(config['context_length'], config['context_length'])))
 
-    def forward(self, inputs, targets=None):
+    def forward(self, inputs: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # inputs and targets are both shape (B,T) tensor of integers
         B, T = inputs.shape
         
@@ -158,7 +174,7 @@ class DecoderModel(nn.Module):
             
         return logits, loss
 
-    def print_hyperparams_to_stdout(self):
+    def print_hyperparams_to_stdout(self) -> int:
         num_params = 0
         for name, item in self.named_parameters():
             if len(item.shape) == 1:
@@ -197,7 +213,7 @@ class DecoderModel(nn.Module):
 
 class PositionalEncoding(nn.Module):  #@save
     """ Ref: https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html """
-    def __init__(self, context_length, d_model, dropout):
+    def __init__(self, context_length: int, d_model: int, dropout: float) -> None:
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         
@@ -209,7 +225,7 @@ class PositionalEncoding(nn.Module):  #@save
         pe[:, :, 1::2] = torch.cos(x)
         self.register_buffer("pe", pe)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (T)
         x = x.unsqueeze(1).unsqueeze(0) # (1, T, 1)
         x = x + self.pe[:, :x.size(1), :].requires_grad_(False) # :x.size(1) is for when context_length < T 
@@ -217,7 +233,7 @@ class PositionalEncoding(nn.Module):  #@save
 
 
 class MyDataset(torch.utils.data.Dataset):
-    def __init__(self, data, context_length):
+    def __init__(self, data: torch.Tensor, context_length: int) -> None:
         if len(data) % context_length == 0:
             #  If no target token left for the last batch. 
             print(f'\n===> MyDataset: len(data) % context_length == 0')
@@ -234,15 +250,22 @@ class MyDataset(torch.utils.data.Dataset):
         self.data = data2
         self.targets = targets2
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.data[idx], self.targets[idx]
 
 
 @torch.no_grad()
-def perplexity(model, device, data, list_steps_val, step, list_losses_val, list_ppl_val):
+def perplexity(model: torch.nn.Module, 
+               device: torch.device, 
+               data: np.ndarray, 
+               list_steps_val: List[int], 
+               step: int, 
+               list_losses_val: List[torch.Tensor], 
+               list_ppl_val: List[torch.Tensor]) -> None:
+    
     s0 = time.time()
     model.eval()
     
@@ -285,7 +308,7 @@ def perplexity(model, device, data, list_steps_val, step, list_losses_val, list_
     list_steps_val.append(step)
 
 
-def generate_text(model, device, step=None, ppl=None):
+def generate_text(model: nn.Module, device: torch.device, step: Optional[int] = None, ppl: Optional[float] = None) -> None:
     if not is_main_process():
         return
 
@@ -303,7 +326,7 @@ def generate_text(model, device, step=None, ppl=None):
 
 
 @torch.no_grad()
-def generate_tokens(model, device, idx, temperature=.5, max_new_tokens=200):
+def generate_tokens(model: nn.Module, device: torch.device, idx: torch.Tensor, temperature: float = .5, max_new_tokens: int = 200) -> torch.Tensor:
     # idx is (B, T) array of indices in the current context
     
     for _ in range(max_new_tokens):
@@ -336,12 +359,12 @@ class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
         Stays constant at 0.1 after x1 steps.
     """
 
-    def __init__(self, optimizer, x0, x1, last_epoch=-1):
+    def __init__(self, optimizer: torch.optim.Optimizer, x0: float, x1: float, last_epoch: int = -1):
         self.x0 = x0 / acc_batch_size
         self.x1 = x1 / acc_batch_size
         super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
-    def lr_lambda(self, x):
+    def lr_lambda(self, x: float) -> float:
         # .step() invokes this function through LambdaLR
         if x < self.x0:
             # linear warm up stage
@@ -369,7 +392,7 @@ class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
         y(x=x1) = p
     """
 
-    def __init__(self, optimizer, x0, x1, p=0.1, last_epoch=-1):
+    def __init__(self, optimizer: torch.optim.Optimizer, x0: float, x1: float, p: float = 0.1, last_epoch: int = -1):
         # x0, and x1 are in "number of tokens"
         # self.x0 and self.x12 are scaled to step size.
         self.x0 = x0 / acc_batch_size
@@ -379,7 +402,7 @@ class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
         self.b = np.sqrt(self.x0 + self.a)
         super(WarmupInvXDecay, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
-    def lr_lambda(self, x):
+    def lr_lambda(self, x: float) -> float:
         # .step() invokes this function through LambdaLR. 
         # Each invokation of .step() increments self._step_count by 1.
         
@@ -398,7 +421,7 @@ class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
         return y
 
 
-def initialize_model(vocab_size, device, learning_rate):
+def initialize_model(vocab_size: int, device: torch.device, learning_rate: float) -> Tuple[torch.nn.Module, torch.optim.Optimizer]:
     # instantiate model
     model = DecoderModel(vocab_size, device)
 
@@ -411,7 +434,7 @@ def initialize_model(vocab_size, device, learning_rate):
     return model, optimizer
 
 
-def load_shakespeare(num_chars=0, filename='dataset/tiny_shakespeare.txt'):
+def load_shakespeare(num_chars: int = 0, filename: str = 'dataset/tiny_shakespeare.txt') -> Tuple[str, float]:
     """ 338,025 tokens
     """
     with open(filename, 'r', encoding='utf-8') as f:
@@ -444,7 +467,7 @@ def is_main_process():
     return get_rank() == 0
 
 
-def save_ddp_model(model, device, step, dname='models'):
+def save_ddp_model(model: torch.nn.Module, device: torch.device, step: int, dname: str = 'models') -> None:
     s0 = time.time() 
 
     PATH = f'{dname}/chkpt_{step:05d}.pt'
@@ -458,12 +481,31 @@ def save_ddp_model(model, device, step, dname='models'):
     return
 
 
-def load_model(model, PATH):
+def load_model(model: torch.nn.Module, PATH: str) -> torch.nn.Module:
+    """
+    Load the model from a given PATH.
+
+    Parameters:
+    model (torch.nn.Module): Model into which the parameters should be loaded.
+    PATH (str): Filepath to the saved model.
+
+    Returns:
+    torch.nn.Module: Model with loaded parameters.
+    """
     model.load_state_dict(torch.load(PATH))
     model.eval()
 
 
-def save_ckpt(device, model, optimizer, step):
+def save_ckpt(device: torch.device, model: nn.Module, optimizer: nn.Optimizer, step: int) -> None:
+    """
+    Save the model and optimizer state to a checkpoint file.
+    
+    Parameters:
+    - device (torch.device): The device on which the model is running.
+    - model (nn.Module): The PyTorch model object whose parameters will be saved.
+    - optimizer (nn.Optimizer): The optimizer whose state will be saved.
+    - step (int): The current training step (used for naming the checkpoint file).
+    """
     s0 = time.time()
 
     PATH = f'models/chkpt_{step:05d}.pt'
@@ -478,9 +520,19 @@ def save_ckpt(device, model, optimizer, step):
         print(f'Checkpoint saved at {PATH}  {print_runtime(s0, False)}') 
     torch.distributed.barrier()
 
-        
-def load_ckpt(device, model, optimizer, PATH):
-    # loads model and optimizer state from a saved checkpoint 
+def load_ckpt(device: torch.device, model: nn.Module, optimizer: nn.Optimizer, PATH: str) -> int:
+    """
+    Load the model and optimizer state from a checkpoint file.
+    
+    Parameters:
+    - device (torch.device): The device on which the model is running.
+    - model (nn.Module): The PyTorch model object into which the saved parameters will be loaded.
+    - optimizer (nn.Optimizer): The optimizer into which the saved state will be loaded.
+    - PATH (str): The file path of the saved model checkpoint.
+    
+    Returns:
+    - int: The training step at which the model was saved.
+    """
     checkpoint = torch.load(PATH, map_location=torch.device('cpu'))
     model.load_state_dict(checkpoint['model'])
     if optimizer:
@@ -495,8 +547,15 @@ def load_ckpt(device, model, optimizer, PATH):
     return step_init
 
 
-def load_ddp_model_to_single_device(model, PATH):
-    from torch.nn.parallel import DistributedDataParallel as DDP
+def load_ddp_model_to_single_device(model:nn.Module, PATH: str) -> None:
+    """
+    Load a Distributed Data Parallel (DDP) model checkpoint to a single device.
+    
+    Parameters:
+    - model (Module): The PyTorch model object into which the saved parameters will be loaded.
+    - PATH (str): The file path of the saved model checkpoint.
+    """
+
     from collections import OrderedDict
 
     state_dict = torch.load(PATH)
@@ -510,7 +569,27 @@ def load_ddp_model_to_single_device(model, PATH):
     model.load_state_dict(new_state_dict)
 
 
-def train(device, model, optimizer, train_data, val_data, world_size, step_init=0, num_tokens_init=0, q_init=0):
+def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer, 
+          train_data: np.ndarray, val_data: np.ndarray, world_size: int, 
+          step_init: int = 0, num_tokens_init: int = 0, q_init: int = 0) -> None:
+    """
+    Train a machine learning model.
+
+    Parameters:
+        device (torch.device): The device where the model will be trained.
+        model (torch.nn.Module): The model to be trained.
+        optimizer (Optimizer): The optimizer to use for training.
+        train_data (np.ndarray): The training data.
+        val_data (np.ndarray): The validation data.
+        world_size (int): The size of the world for distributed training.
+        step_init (int, optional): Initial step number. Default is 0.
+        num_tokens_init (int, optional): Initial number of tokens. Default is 0.
+        q_init (int, optional): Initial batch counter. Default is 0.
+    
+    Returns:
+        None
+    """
+    
     start = time.time()
     if is_main_process():
         print(f"world_size: {world_size}")
@@ -531,7 +610,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
     (list_lr, list_secs, list_ppl_val, list_grads) = [[] for _ in range(4)]
     num_tokens = sample_no = step = 0
     n = len(train_data)
-    lr_scheduler = WarmupCosineAnnealing(optimizer, x0=x0, x1=x1)
+    lr_scheduler = WarmupCosineAnnealing(optimizer, x0=config['x0'], x1=config['x1'])
 
     perplexity(model, device, val_data, list_steps_val, step, list_losses_val, list_ppl_val)
 
@@ -566,7 +645,7 @@ def train(device, model, optimizer, train_data, val_data, world_size, step_init=
 
             mytrainset = MyDataset(data_step, context_length=config['context_length'])
             train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
-                                                       batch_size=(num_chunked_batches*batch_size),
+                                                       batch_size=(num_chunked_batches*[config'batch_size']),
                                                        shuffle=False,
                                                        sampler=DistributedSampler(mytrainset))
 

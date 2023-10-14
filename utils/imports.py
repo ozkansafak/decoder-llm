@@ -1,28 +1,49 @@
+from typing import List, Dict, Any
 import yaml
-import time, glob
+import time
+import glob
 import torch
 from prettytable import PrettyTable
 import matplotlib.pylab as pylab
 import tiktoken 
 from tiktoken_ext.openai_public import ENCODING_CONSTRUCTORS
 
+# Matplotlib Configuration
+pylab.rcParams.update({'legend.fontsize': 'small',
+                       'font.size'      : 12,
+                       'figure.figsize' : (9, 3.5),
+                       'axes.labelsize' : 'small',
+                       'axes.titlesize' : 'small',
+                       'axes.grid'      : 'on',
+                       'xtick.labelsize': 'small',
+                       'ytick.labelsize': 'small'})
 
-# Hyperparameters
-with open("config.yml", 'r') as file:
-    config = yaml.safe_load(file)
-
+# Global Configuration
+CONFIG_FILE_PATH = "config.yml"
+DATA_DIRECTORY = "/data/home/osafak/code/mygpt/dataset/news_tensors"
+DATA_PATH = f"{DATA_DIRECTORY}/*.pt"
 str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
 vocab = set(str_vocab)
 
-assert config['tokenizer'] in ['gpt2', 'character']
+# Load Configuration and Hyperparameters
+def load_config(config_file: str) -> Dict[str, Any]:
+    try:
+        with open(config_file, 'r') as file:
+            return yaml.safe_load(file)
+    except FileNotFoundError:
+        print("Error: Configuration file not found.")
+        exit(1)
 
-
-num_chars = 0 
+config = load_config(CONFIG_FILE_PATH)
 config['d_head'] = int(config['d_model'] / config['n_heads'])
 
+# Validate Configurations
+assert config['tokenizer'] in ['gpt2', 'character']
 assert (config['d_model'] / config['n_heads']) % 1 == 0
 
+num_chars = 0 
 
+# Compute Batch Size and Handle Inconsistencies
 world_size = torch.cuda.device_count()  if torch.cuda.is_available() else 1 # 7
 config['batch_size'] = config['batch_size_gpu'] * world_size  # 42
 if config['batch_size'] % world_size > 0:
@@ -39,7 +60,8 @@ _directory = "/data/home/osafak/code/mygpt/dataset/news_tensors"
 _PATH = f"{_directory}/*.pt"
 ls_pt = glob.glob(_PATH)
 ls_pt.sort(key=lambda x: x.split("/")[-1])
-def print_trainset_deets():
+
+def print_trainset_details() -> None:
     """
         europarl-v6.en_000.pt        -- 59.34 million tokens
         news-commentary-v6.en_000.pt -- 4.81 million tokens  (used as validation set)
@@ -53,32 +75,28 @@ def print_trainset_deets():
     """
 
     if torch.distributed.get_rank() == 0:
-        print('trainset:')
+        print('Trainset:')
         for fname in ls_pt:
             data = torch.load(fname)
-            print(f"         {fname.split('/')[-1]:28s} -- {len(data)/1e6:.2f} million tokens")
+            print(f"{fname.split('/')[-1]:<28} -- {len(data) / 1e6:.2f} million tokens")
 
 
-def print_runtime(start, printer=True):
+def print_runtime(start: float, printer: bool = True) -> None:
     end = time.time()
     if printer:
-        print(f'Runtime: {int((end-start)//60)} min {int((end-start)%60):2d} sec')
-        return None
+        print(f'Runtime: {int((end - start) // 60)} min {int((end - start) % 60):2d} sec')
     else:
-        if int((end-start)//60) == 0:
-            return f'({int((end-start)%60)} sec)'
-        else:
-            return f'({int((end-start)//60)} min {int((end-start)%60):2d} sec)'
+        return f'({int((end - start) // 60)} min {int((end - start) % 60):2d} sec)'
 
 
-def count_parameters(model):
+def count_parameters(model: torch.nn.Module) -> int:
     table = PrettyTable(["Modules", "Parameters"])
     total_params = 0
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad: continue
-        params = parameter.numel()
-        table.add_row([name, params])
-        total_params += params
+        param_count = parameter.numel()
+        table.add_row([name, param_count])
+        total_params += param_count
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
@@ -100,13 +118,3 @@ elif config['tokenizer'] == 'character':
         return [stoi[c] for c in str_input]
     def decode(list_idx):
         return ''.join([itos[i] for i in list_idx])
-
-pylab.rcParams.update({'legend.fontsize': 'small',
-                       'font.size'      : 12,
-                       'figure.figsize' : (9, 3.5),
-                       'axes.labelsize' : 'small',
-                       'axes.titlesize' : 'small',
-                       'axes.grid'      : 'on',
-                       'xtick.labelsize': 'small',
-                       'ytick.labelsize': 'small'})
-
