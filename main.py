@@ -1,38 +1,16 @@
 # Standard and Third-Party Libraries
 import os
-import sys
 import glob
-import json
-import time
-import pickle
-import random
 import argparse
-import datetime
-from collections import Counter
-from urllib.request import urlopen
 
 # External Packages
-import ipdb
-import re
-import pytz
-import numpy as np
 import torch
 import torch.multiprocessing as mp
-import unidecode
-import unicodedata
-from bs4 import BeautifulSoup
-from pprint import pprint
-from prettytable import PrettyTable
-from torch import nn
-from torch.nn import functional as F
-from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-import tiktoken
 
 # Local Utilities and Configs
-from utils.imports import vocab_size, learning_rate, num_chars, tokenizer, acc_batch_size, world_size
-from utils.helpers import load_val_data
+from utils.imports import vocab_size, learning_rate, tokenizer, acc_batch_size, world_size
 from utils.model import initialize_model, load_openwebtext_data, train, load_ckpt
 
 

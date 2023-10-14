@@ -1,24 +1,11 @@
 import yaml
-import os
-import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
-from collections import Counter
-from urllib.request import urlopen
-from bs4 import BeautifulSoup
-import numpy as np
-from pprint import pprint
+import time, glob
 import torch
-from torch import nn
-from torch.nn import functional as F
 from prettytable import PrettyTable
-import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import tiktoken 
 from tiktoken_ext.openai_public import ENCODING_CONSTRUCTORS
 
-import torch.multiprocessing as mp
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
 
 # Hyperparameters
 with open("config.yml", 'r') as file:
@@ -105,7 +92,7 @@ if config['tokenizer'] == 'gpt2':
     vocab_size = enc.n_vocab
     encode = enc.encode
     decode = enc.decode
-elif tokenizer == 'character':
+elif config['tokenizer'] == 'character':
     vocab_size = len(vocab)
     stoi = {s:i for i,s in enumerate(str_vocab)}
     itos = {i:s for i,s in enumerate(str_vocab)}

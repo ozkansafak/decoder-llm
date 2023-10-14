@@ -1,26 +1,11 @@
 import os
 import time
-import json
 import torch
 import numpy as np
-from pprint import pprint
-from urllib.request import urlopen
 from torch import nn
-from torch.nn import functional as F
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
-from collections import Counter
-from bs4 import BeautifulSoup
-from prettytable import PrettyTable
+import matplotlib.pyplot as pl
 from utils.imports import (
     print_runtime,
-    vocab,
-    num_chars,
-    encode,
-    decode,
-    plt,
-    pylab,
     ls_pt,
 )
 

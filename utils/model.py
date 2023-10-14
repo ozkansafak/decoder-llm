@@ -1,25 +1,17 @@
 import os
-import ipdb, re, pytz, datetime, time, sys, pickle, glob, json, random, unidecode, unicodedata
-from collections import Counter
-from urllib.request import urlopen
-from bs4 import BeautifulSoup
+import time
 import numpy as np
-from pprint import pprint
 import torch
 from torch import nn
 from torch.nn import functional as F
 from prettytable import PrettyTable
-import tiktoken 
 
-import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
 
-from utils.imports import (print_runtime, vocab_size, config, batch_jump, 
-num_chars, encode, decode, world_size, acc_batch_size, num_chunked_batches, print_trainset_deets)
+from utils.imports import (print_runtime, config, batch_jump, 
+encode, decode, world_size, acc_batch_size, num_chunked_batches)
 
-from utils.helpers import plotter, load_google_corpus, load_openwebtext_data, get_grad_vector
+from utils.helpers import plotter, get_grad_vector
 
 torch.manual_seed(1337)
 
