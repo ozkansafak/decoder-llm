@@ -1,5 +1,5 @@
-from typing import Tuple, List, Optional
-
+# Standard Libraries
+from typing import Tuple, List, Optional, Union, Any
 import os
 import time
 import numpy as np
@@ -12,13 +12,10 @@ from torch.utils.data.distributed import DistributedSampler
 
 from utils.imports import (
     print_runtime, 
-    config, 
-    batch_jump, 
     encode, 
     decode, 
-    world_size, 
-    acc_batch_size, 
-    num_chunked_batches
+    config, 
+    world_size
 )
 
 from utils.helpers import plotter, get_grad_vector
@@ -35,7 +32,7 @@ class SingleHead(nn.Module):
         self.W_Q = nn.Linear(config['d_model'], config['d_head'], bias=False)
         self.W_V = nn.Linear(config['d_model'], config['d_head'], bias=False)
         """ torch.tril: retains lower triangular part of 2-D matrix, and sets the other elements to 0. 
-            Here, we register_buffer self.tril so the gradients of the values of the mask won't be computed.
+            Here, put self.tril in a register_buffer so the gradients of the values of the mask won't be computed.
                >  If you have parameters in your model, which should be saved and restored in the state_dict,
                >  but not trained by the optimizer, you should register them as buffers.
         """
@@ -200,7 +197,7 @@ class DecoderModel(nn.Module):
             table = PrettyTable(['d_model', 'n_layers', 'n_heads', 'd_head', 'context_length', 'batch_size', 
                                  'acc_batch_size', 'learning_rate'])
             table.add_row([config['d_model'], config['n_layers'], config['n_heads'], config['d_head'], config['context_length'], 
-                           f"{config['batch_size']}\n{config['batch_size_gpu']}/GPU", acc_batch_size, f"{config['learning_rate']:.2e}"])
+                           f"{config['batch_size']}\n{config['batch_size_gpu']}/GPU", config['acc_batch_size'], f"{config['learning_rate']:.2e}"])
 
             self.table = table
             self.specs = str_num_params +\
@@ -270,19 +267,19 @@ def perplexity(model: torch.nn.Module,
     model.eval()
     
     ctr = ppl = loss_avgd = 0
-    for q in range(min(4, len(data) // acc_batch_size)):
+    for q in range(min(4, len(data) // config['acc_batch_size'])):
         # for OpenWebText val_data.bin there are 8 or 9 0.5M-token batches.
-        q0 = q * acc_batch_size
-        q1 = (q+1) * acc_batch_size + 1
+        q0 = q * config['acc_batch_size']
+        q1 = (q+1) * config['acc_batch_size'] + 1
         data_step = torch.from_numpy(data[q0:q1].astype(np.int64))
         mytestset = MyDataset(data_step, context_length=config['context_length'])
         test_loader = torch.utils.data.DataLoader(dataset=mytestset,
-                                                  batch_size=(num_chunked_batches*config['batch_size']),
+                                                  batch_size=(config['num_chunked_batches']*config['batch_size']),
                                                   shuffle=False,
                                                   sampler=DistributedSampler(mytestset))
 
         for batch_no, (xb_big, yb_big) in enumerate(test_loader):
-            for i in range(num_chunked_batches):
+            for i in range(config['num_chunked_batches']):
                 xb = xb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]  # each device ==> (4, 512) 
                 yb = yb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]
 
@@ -332,7 +329,7 @@ def generate_tokens(model: nn.Module, device: torch.device, idx: torch.Tensor, t
     for _ in range(max_new_tokens):
         # get prediction 
         # crop idx to the last context_length tokens
-        logits, _ = model(idx[:, -context_length:]) # logits.shape: (1, T, n_vocab) 
+        logits, _ = model(idx[:, -config['context_length']:]) # logits.shape: (1, T, n_vocab) 
 
         # focus only on the last time step
         logits = logits[:, -1, :] # becomes (B, C)
@@ -359,9 +356,10 @@ class WarmupCosineAnnealing(torch.optim.lr_scheduler.LambdaLR):
         Stays constant at 0.1 after x1 steps.
     """
 
-    def __init__(self, optimizer: torch.optim.Optimizer, x0: float, x1: float, last_epoch: int = -1):
-        self.x0 = x0 / acc_batch_size
-        self.x1 = x1 / acc_batch_size
+    def __init__(self, optimizer: Any,
+                  x0: float, x1: float, last_epoch: int = -1):
+        self.x0 = x0 / config['acc_batch_size']
+        self.x1 = x1 / config['acc_batch_size']
         super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
 
     def lr_lambda(self, x: float) -> float:
@@ -392,11 +390,12 @@ class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
         y(x=x1) = p
     """
 
-    def __init__(self, optimizer: torch.optim.Optimizer, x0: float, x1: float, p: float = 0.1, last_epoch: int = -1):
+    def __init__(self, optimizer: Any,
+                  x0: float, x1: float, p: float = 0.1, last_epoch: int = -1):
         # x0, and x1 are in "number of tokens"
         # self.x0 and self.x12 are scaled to step size.
-        self.x0 = x0 / acc_batch_size
-        self.x1 = x1 / acc_batch_size
+        self.x0 = x0 / config['acc_batch_size']
+        self.x1 = x1 / config['acc_batch_size']
         self.p = p
         self.a = 1 / (1 - self.p**2) * (self.p**2 * self.x1 - self.x0)
         self.b = np.sqrt(self.x0 + self.a)
@@ -423,7 +422,7 @@ class WarmupInvXDecay(torch.optim.lr_scheduler.LambdaLR):
 
 def initialize_model(vocab_size: int, device: torch.device, learning_rate: float) -> Tuple[torch.nn.Module, torch.optim.Optimizer]:
     # instantiate model
-    model = DecoderModel(vocab_size, device)
+    model = DecoderModel(vocab_size, device, config)
 
     # Create a pytorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)  
@@ -496,7 +495,9 @@ def load_model(model: torch.nn.Module, PATH: str) -> torch.nn.Module:
     model.eval()
 
 
-def save_ckpt(device: torch.device, model: nn.Module, optimizer: nn.Optimizer, step: int) -> None:
+def save_ckpt(device: torch.device, model: nn.Module, 
+              optimizer: Any,
+              step: int) -> None:
     """
     Save the model and optimizer state to a checkpoint file.
     
@@ -520,7 +521,9 @@ def save_ckpt(device: torch.device, model: nn.Module, optimizer: nn.Optimizer, s
         print(f'Checkpoint saved at {PATH}  {print_runtime(s0, False)}') 
     torch.distributed.barrier()
 
-def load_ckpt(device: torch.device, model: nn.Module, optimizer: nn.Optimizer, PATH: str) -> int:
+def load_ckpt(device: torch.device, model: nn.Module, 
+              optimizer: Any,
+              PATH: str) -> int:
     """
     Load the model and optimizer state from a checkpoint file.
     
@@ -569,7 +572,8 @@ def load_ddp_model_to_single_device(model:nn.Module, PATH: str) -> None:
     model.load_state_dict(new_state_dict)
 
 
-def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer, 
+def train(device: torch.device, model: nn.Module, 
+          optimizer: Any, 
           train_data: np.ndarray, val_data: np.ndarray, world_size: int, 
           step_init: int = 0, num_tokens_init: int = 0, q_init: int = 0) -> None:
     """
@@ -595,12 +599,12 @@ def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer,
         print(f"world_size: {world_size}")
         print(f"batch_size: {config['batch_size']}")
         print(f"context_length: {config['context_length']}")
-        print(f"batch_jump: {batch_jump}")
+        print(f"batch_jump: {config['batch_jump']}")
         print(f"x0: {config['x0']/1e9:.3f}e9")
         print(f"x1: {int(config['x1']/1e9)}e9")
         print(f"clip: {config['clip']:.2f}")
-        print(f"acc_batch_size: {acc_batch_size}")
-        print(f"num_chunked_batches: {num_chunked_batches}")
+        print(f"acc_batch_size: {config['acc_batch_size']}")
+        print(f"num_chunked_batches: {config['num_chunked_batches']}")
         print(f"step_init: {step_init}")
         print(f"num_tokens_init: {num_tokens_init}")
         print(f"q_init: {q_init}")
@@ -629,23 +633,23 @@ def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer,
     # train-loop
     for epoch in range(20):
         if is_main_process():
-            print(f'\n {"---"*30}\n\nepoch:{epoch} -- num_chunked_batches:{num_chunked_batches} -- step:{step}')
-            print(f'shaved number of tokens in train_data: {n -  (n // acc_batch_size)* acc_batch_size}', end='')
-            print(f' -- {((n // acc_batch_size)* acc_batch_size) / n * 100 : .2f} % train_data retained')
+            print(f"\n {'---'*30}\n\nepoch:{epoch} -- num_chunked_batches:{config['num_chunked_batches']} -- step:{step}")
+            print(f"haved number of tokens in train_data: {n -  (n // config['acc_batch_size']) * config['acc_batch_size']}", end='')
+            print(f" -- {((n // config['acc_batch_size'])* config['acc_batch_size']) / n * 100 : .2f} % train_data retained")
 
-        for q in range(0, n // acc_batch_size):
+        for q in range(0, n // config['acc_batch_size']):
             if step_init > 0 and epoch == 0 and q < q_init:
                 continue
             elif step_init > 0 and epoch == 0 and q == q_init and is_main_process():
                 print(f'Restarting from checkpoint. Fastforward batches step:{step} -- q:{q} -- num_tokens:{num_tokens:.2e}')
 
-            q0 = q * acc_batch_size
-            q1 = (q+1) * acc_batch_size + 1
+            q0 = q * config['acc_batch_size']
+            q1 = (q+1) * config['acc_batch_size'] + 1
             data_step = torch.from_numpy(train_data[q0:q1].astype(np.int64))
 
             mytrainset = MyDataset(data_step, context_length=config['context_length'])
             train_loader = torch.utils.data.DataLoader(dataset=mytrainset,
-                                                       batch_size=(num_chunked_batches*[config'batch_size']),
+                                                       batch_size=(config['num_chunked_batches'] * config['batch_size']),
                                                        shuffle=False,
                                                        sampler=DistributedSampler(mytrainset))
 
@@ -655,7 +659,7 @@ def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer,
                 xb_big = xb_big.to(device)  # each device ==> (34 * 4, 512)
                 yb_big = yb_big.to(device)  
                 total_size = 0
-                for i in range(num_chunked_batches):
+                for i in range(config['num_chunked_batches']):
                     xb = xb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]  # each device ==> (4, 512) 
                     yb = yb_big[i*config['batch_size_gpu'] : (i+1)*config['batch_size_gpu']]
                     num_tokens += len(xb) * config['context_length'] * world_size
@@ -666,7 +670,7 @@ def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer,
                     logits, loss = model(xb, yb) # evaluate the loss
                     loss.backward() # adds to the gradients
 
-                if total_size != acc_batch_size:
+                if total_size != config['acc_batch_size']:
                     if is_main_process():
                         print(f'total_size != acc_batch_size. device:{device}:  epoch:{epoch}'+
                               f'total_size={total_size} -- i:{i} -- batch_no:{batch_no} of {len(train_loader)}')
@@ -674,7 +678,7 @@ def train(device: torch.device, model: torch.nn.Module, optimizer: Optimizer,
 
                 step += 1
                 grad_norm = torch.linalg.norm(get_grad_vector(model)) if step % 50 == 0 else np.nan
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip) # clip grads at 1.
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config['clip']) # clip grads at 1.
                 optimizer.step() # Updates the weights:  w = w - grad * lr
                 optimizer.zero_grad(set_to_none=False)
                 lr_scheduler.step()

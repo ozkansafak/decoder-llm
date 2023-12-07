@@ -43,12 +43,11 @@ def load_google_corpus(device: int, idx: int) -> (torch.Tensor, int):
 
 
 def load_openwebtext_dataset() -> (np.ndarray, np.ndarray):
-    start_time = time.time()
     data_dir = os.path.join(os.getcwd(), 'dataset/openwebtext/')
-    training_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    validation_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
     
-    return training_data, validation_data
+    return train_data, val_data
 
 
 
@@ -97,10 +96,10 @@ def plotter(
     ax00.text(0, 0.9, model.module.specs, ha='left', va='top', family='monospace', size='smaller')
     ax00.text(0, 0.5, model.module.table, ha='left', va='top', family='monospace', size='smaller')
 
-    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {min2(list_losses_val):.2f}')
-    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {min2(list_losses):.2f}')
+    ax10.semilogy(list_steps_val, list_losses_val, 'r-', alpha=.6, label=f'val {find_min_non_zero(list_losses_val):.2f}')
+    ax10.semilogy(list_steps, list_losses, 'k-', alpha=.6, label=f'train {find_min_non_zero(list_losses):.2f}')
     ax10.set_title(f'Cross-Entropy Loss (step={step}) {print_runtime(start, False)} ')
-    ax10.set_ylim(min(3, min2(list_losses)-0.1), 11)
+    ax10.set_ylim(min(3, find_min_non_zero(list_losses)-0.1), 11)
     
     ax11.plot(list_steps, list_lr, 'k', alpha=.5)
     ax11.set_title('learning_rate')
@@ -109,7 +108,7 @@ def plotter(
     ax20.plot(list_steps, list_secs, 'k.', alpha=.5, label='Wall time per step')
     ax20.set_ylabel('sec')
 
-    ax21.plot(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'test perplexity\n{min2(list_ppl_val):.2f}')
+    ax21.plot(list_steps_val, list_ppl_val, 'k-', alpha=.6, label=f'test perplexity\n{find_min_non_zero(list_ppl_val):.2f}')
     ax21.set_ylim(0, 90)
 
     [ax.set_xlabel('steps') for ax in [ax11, ax21]]

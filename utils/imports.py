@@ -1,3 +1,4 @@
+# Standard Libraries
 from typing import List, Dict, Any
 import yaml
 import time
@@ -22,6 +23,7 @@ pylab.rcParams.update({'legend.fontsize': 'small',
 CONFIG_FILE_PATH = "config.yml"
 DATA_DIRECTORY = "/data/home/osafak/code/mygpt/dataset/news_tensors"
 DATA_PATH = f"{DATA_DIRECTORY}/*.pt"
+
 str_vocab = '\t\n !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
 vocab = set(str_vocab)
 
@@ -44,7 +46,7 @@ assert (config['d_model'] / config['n_heads']) % 1 == 0
 num_chars = 0 
 
 # Compute Batch Size and Handle Inconsistencies
-world_size = torch.cuda.device_count()  if torch.cuda.is_available() else 1 # 7
+world_size = torch.cuda.device_count() if torch.cuda.is_available() else 1 # 7
 config['batch_size'] = config['batch_size_gpu'] * world_size  # 42
 if config['batch_size'] % world_size > 0:
     print(f"===> batch_size not a multiple of world_size: (batch_size % world_size = {config['batch_size'] % world_size}) "+
@@ -52,9 +54,9 @@ if config['batch_size'] % world_size > 0:
     config['batch_size'] = (config['batch_size'] // world_size) * world_size
 
 # this is batch_size (B) per gpu.
-batch_jump = (config['context_length'] * config['batch_size'])  # number of tokens ingested in each batch
-acc_batch_size = (config['acc_batch_size'] // batch_jump) * batch_jump  
-num_chunked_batches = int(acc_batch_size / batch_jump) # number of loss.backward() made before doing an optim.step()
+config['batch_jump'] = (config['context_length'] * config['batch_size'])  # number of tokens ingested in each batch
+config['acc_batch_size'] = (config['acc_batch_size'] // config['batch_jump']) * config['batch_jump']  
+config['num_chunked_batches'] = int(config['acc_batch_size'] / config['batch_jump']) # number of loss.backward() made before doing an optim.step()
 
 _directory = "/data/home/osafak/code/mygpt/dataset/news_tensors"
 _PATH = f"{_directory}/*.pt"
